@@ -1,8 +1,10 @@
-# Workspace — ORAKSER (Orakzai Services)
+# Workspace — ORAKSER & OTC Super App
 
 ## Overview
 
-Corporate website for ORAKSER — Pakistan's premier intellectual property and legal services firm. Features a Midnight Gold luxury theme with full admin panel.
+Two products in one monorepo:
+1. **ORAKSER** — Corporate website for Orakzai Services (intellectual property & legal). Midnight Gold luxury theme, full admin panel.
+2. **OTC Super App** — Expo/React Native mobile Super App for Orakzai Transport Corporation. Phone/OTP auth, OTC Coins wallet, referral engine, Super App grid (Ride, Delivery, Rent-a-Car, Hotel).
 
 ## Stack
 
@@ -15,13 +17,15 @@ Corporate website for ORAKSER — Pakistan's premier intellectual property and l
 - **Validation**: Zod (`zod/v4`), `drizzle-zod`
 - **API codegen**: Orval (from OpenAPI spec)
 - **Build**: esbuild (CJS bundle)
-- **Frontend**: React + Vite + Tailwind CSS + Framer Motion
-- **GitHub repo**: https://github.com/faisalorakzai-lab/OrakzaiServices
+- **Web frontend**: React + Vite + Tailwind CSS + Framer Motion
+- **Mobile**: Expo SDK 54 + Expo Router v6 + React Native
+- **GitHub repos**: https://github.com/faisalorakzai-lab/OrakzaiServices, https://github.com/faisalorakzai-lab/otc
 
 ## Key Artifacts
 
-- `artifacts/orakser` — Main corporate website (preview: `/`)
+- `artifacts/orakser` — ORAKSER corporate website (preview: `/`)
 - `artifacts/api-server` — Express API server (preview: `/api`)
+- `artifacts/otc` — OTC Super App (Expo mobile, preview: `/otc/`)
 
 ## Pages
 
@@ -50,6 +54,16 @@ Corporate website for ORAKSER — Pakistan's premier intellectual property and l
 - `PUT/DELETE /api/offices/:id` — Update, delete an office
 - `POST /api/contact` — Submit contact form
 - `GET /api/contact/submissions` — List all contact submissions (admin)
+
+## OTC Super App Details
+
+- **Auth**: Phone + OTP (demo OTP: 1234). JWT stored in AsyncStorage.
+- **OTC Wallet**: OTC Coins currency. New users get 10 welcome coins.
+- **Referral Engine**: Referrer earns 5 OTC Coins, new user earns 10 on signup.
+- **Service Grid**: Ride, Delivery, Rent-a-Car (active); Hotel (coming soon).
+- **State**: AsyncStorage-based persistence. No backend required for mobile features.
+- **Design**: Midnight Gold — #050505 bg, #FFD700 accents, glassmorphic cards.
+- **Files**: `contexts/AuthContext.tsx`, `contexts/WalletContext.tsx`, `constants/colors.ts`
 
 ## Notes
 

@@ -1,0 +1,27 @@
+kind = "mobile"
+previewPath = "/otc/"
+title = "OTC Super App"
+version = "1.0.0"
+id = "artifacts/otc"
+router = "expo-domain"
+
+[[integratedSkills]]
+name = "expo"
+version = "1.0.0"
+
+[[services]]
+ensurePreviewReachable = "/status"
+name = "expo"
+paths = [ "/otc/" ]
+localPort = 19737
+
+[services.development]
+run = "pnpm --filter @workspace/otc run dev"
+
+[services.production]
+build = [ "pnpm", "--filter", "@workspace/otc", "run", "build" ]
+run = [ "pnpm", "--filter", "@workspace/otc", "run", "serve" ]
+
+[services.env]
+PORT = "19737"
+BASE_PATH = "/otc/"

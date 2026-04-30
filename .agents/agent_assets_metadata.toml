@@ -1,0 +1,8 @@
+uploads = []
+outputs = []
+
+[[generated]]
+id = "7XA1IjrSsAOoqAYwLtljM"
+uri = "file://artifacts/otc/assets/images/icon.png"
+type = "image"
+title = "otc-super-app-icon"
