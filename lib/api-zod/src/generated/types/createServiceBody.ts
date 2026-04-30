@@ -6,6 +6,11 @@
  * OpenAPI spec version: 0.1.0
  */
 
-export interface HealthStatus {
-  status: string;
+export interface CreateServiceBody {
+  name: string;
+  description: string;
+  price: string;
+  icon: string;
+  category: string;
+  featured: boolean;
 }

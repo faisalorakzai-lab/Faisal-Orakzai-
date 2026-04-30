@@ -6,6 +6,11 @@
  * OpenAPI spec version: 0.1.0
  */
 
-export interface HealthStatus {
-  status: string;
+export interface CreateOfficeBody {
+  city: string;
+  address: string;
+  phone: string;
+  isHeadquarters: boolean;
+  lat: number;
+  lng: number;
 }
