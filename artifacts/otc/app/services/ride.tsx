@@ -66,7 +66,7 @@ type Phase = "input" | "ready" | "searching" | "found";
 export default function OtcRideScreen() {
   const colors = useColors();
   const insets = useSafeAreaInsets();
-  const { user: authUser } = useAuth();
+  const { user: authUser, token: authToken } = useAuth();
   const { city, district, coordinates } = useLocation();
   const { setSelectedClass } = useRide();
 
@@ -148,7 +148,9 @@ export default function OtcRideScreen() {
     setInsufficientBalance(false);
     if (method === "wallet" && authUser?.id) {
       try {
-        const resp = await fetch(getApiUrl(`/api/otc/wallet-balance/${authUser.id}`));
+        const resp = await fetch(getApiUrl(`/api/otc/wallet-balance/${authUser.id}`), {
+          headers: authToken ? { Authorization: `Bearer ${authToken}` } : {},
+        });
         if (resp.ok) {
           const json = (await resp.json()) as { wallet_balance: number };
           setWalletBalance(json.wallet_balance);
@@ -312,7 +314,10 @@ export default function OtcRideScreen() {
       try {
         const resp = await fetch(getApiUrl("/api/otc/match-driver"), {
           method: "POST",
-          headers: { "Content-Type": "application/json" },
+          headers: {
+            "Content-Type": "application/json",
+            ...(authToken ? { Authorization: `Bearer ${authToken}` } : {}),
+          },
           body: JSON.stringify({
             ride_request_id: id,
             pickup_lat: pickup.lat,

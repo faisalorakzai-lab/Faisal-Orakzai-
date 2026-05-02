@@ -13,6 +13,28 @@ const supabaseAdmin =
       })
     : null;
 
+// ── Auth helper ──────────────────────────────────────────────────────────────
+// Parses the OTC custom JWT (header.payload.sig, base64-encoded parts).
+// Returns {sub, exp} from the payload, or null if malformed/wrong issuer.
+function parseOtcToken(authHeader: string | undefined): { sub: string; exp: number } | null {
+  if (!authHeader?.startsWith("Bearer ")) return null;
+  const token = authHeader.slice(7);
+  const parts = token.split(".");
+  if (parts.length !== 3) return null;
+  try {
+    const payload = JSON.parse(Buffer.from(parts[1], "base64").toString("utf8")) as {
+      sub?: unknown;
+      exp?: unknown;
+      iss?: unknown;
+    };
+    if (payload.iss !== "otc-super-app") return null;
+    if (typeof payload.sub !== "string" || typeof payload.exp !== "number") return null;
+    return { sub: payload.sub, exp: payload.exp };
+  } catch {
+    return null;
+  }
+}
+
 export async function ensureOtcTables(): Promise<void> {
   if (!supabaseAdmin) return;
   try {
@@ -115,14 +137,27 @@ router.get("/health", (_req, res) => {
 });
 
 // ── GET /api/otc/wallet-balance/:userId ──────────────────────────────────────
-// MVP: userId is supplied by the authenticated client. In production this
-// route should be protected by an auth middleware that verifies the JWT and
-// asserts req.user.id === params.userId before querying.
+// Requires a valid OTC session token (Authorization: Bearer <token>).
+// The token's sub claim must match the requested userId.
 router.get("/wallet-balance/:userId", async (req, res) => {
   const { userId } = req.params;
 
   if (!userId || userId.trim() === "") {
     res.status(400).json({ error: "userId is required" });
+    return;
+  }
+
+  const claims = parseOtcToken(req.headers.authorization);
+  if (!claims) {
+    res.status(401).json({ error: "Unauthorized — missing or invalid token" });
+    return;
+  }
+  if (Math.floor(Date.now() / 1000) > claims.exp) {
+    res.status(401).json({ error: "Unauthorized — token expired" });
+    return;
+  }
+  if (claims.sub !== userId) {
+    res.status(403).json({ error: "Forbidden — token subject does not match userId" });
     return;
   }
 
@@ -169,8 +204,30 @@ router.post("/match-driver", async (req, res) => {
     return;
   }
 
+  // Verify the caller holds a valid session token
+  const claims = parseOtcToken(req.headers.authorization);
+  if (!claims) {
+    res.status(401).json({ error: "Unauthorized — missing or invalid token" });
+    return;
+  }
+  if (Math.floor(Date.now() / 1000) > claims.exp) {
+    res.status(401).json({ error: "Unauthorized — token expired" });
+    return;
+  }
+
   if (!supabaseAdmin) {
     res.status(503).json({ error: "Supabase not configured on server" });
+    return;
+  }
+
+  // Verify ride_request belongs to the authenticated user
+  const { data: rideOwner } = await supabaseAdmin
+    .from("ride_requests")
+    .select("user_id")
+    .eq("id", ride_request_id)
+    .single();
+  if (rideOwner?.user_id && rideOwner.user_id !== claims.sub) {
+    res.status(403).json({ error: "Forbidden — ride request does not belong to this user" });
     return;
   }
 
