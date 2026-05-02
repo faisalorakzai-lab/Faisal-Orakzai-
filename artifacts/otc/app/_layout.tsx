@@ -15,6 +15,8 @@ import { SafeAreaProvider } from "react-native-safe-area-context";
 
 import { ErrorBoundary } from "@/components/ErrorBoundary";
 import { AuthProvider, useAuth } from "@/contexts/AuthContext";
+import { CharacterProvider } from "@/contexts/CharacterContext";
+import { RideProvider } from "@/contexts/RideContext";
 import { WalletProvider } from "@/contexts/WalletContext";
 
 SplashScreen.preventAutoHideAsync();
@@ -43,6 +45,14 @@ function RootLayoutNav() {
     <Stack screenOptions={{ headerShown: false }}>
       <Stack.Screen name="(auth)" />
       <Stack.Screen name="(tabs)" />
+      <Stack.Screen
+        name="services/ride"
+        options={{ presentation: "card", headerShown: false, animation: "slide_from_bottom" }}
+      />
+      <Stack.Screen
+        name="services/sovereign-mode"
+        options={{ presentation: "fullScreenModal", headerShown: false }}
+      />
       <Stack.Screen
         name="services/[id]"
         options={{ presentation: "card", headerShown: false }}
@@ -75,9 +85,13 @@ export default function RootLayout() {
             <KeyboardProvider>
               <AuthProvider>
                 <WalletProvider>
-                  <AuthGate>
-                    <RootLayoutNav />
-                  </AuthGate>
+                  <CharacterProvider>
+                    <RideProvider>
+                      <AuthGate>
+                        <RootLayoutNav />
+                      </AuthGate>
+                    </RideProvider>
+                  </CharacterProvider>
                 </WalletProvider>
               </AuthProvider>
             </KeyboardProvider>
