@@ -18,6 +18,7 @@ import { ErrorBoundary } from "@/components/ErrorBoundary";
 import { AuthProvider, useAuth } from "@/contexts/AuthContext";
 import { CharacterProvider } from "@/contexts/CharacterContext";
 import { LocationProvider } from "@/contexts/LocationContext";
+import { FlightProvider } from "@/contexts/FlightContext";
 import { HotelProvider } from "@/contexts/HotelContext";
 import { ReferralProvider } from "@/contexts/ReferralContext";
 import { RentalProvider } from "@/contexts/RentalContext";
@@ -82,6 +83,14 @@ function RootLayoutNav() {
         name="services/hotel-bookings"
         options={{ presentation: "card", headerShown: false, animation: "slide_from_right" }}
       />
+      <Stack.Screen
+        name="services/flight"
+        options={{ presentation: "card", headerShown: false, animation: "slide_from_right" }}
+      />
+      <Stack.Screen
+        name="services/flight-bookings"
+        options={{ presentation: "card", headerShown: false, animation: "slide_from_right" }}
+      />
     </Stack>
   );
 }
@@ -129,13 +138,15 @@ export default function RootLayout() {
                     <ReferralProvider>
                       <RentalProvider>
                         <HotelProvider>
-                          <CharacterProvider>
-                            <RideProvider>
-                              <AuthGate>
-                                <RootLayoutNav />
-                              </AuthGate>
-                            </RideProvider>
-                          </CharacterProvider>
+                          <FlightProvider>
+                            <CharacterProvider>
+                              <RideProvider>
+                                <AuthGate>
+                                  <RootLayoutNav />
+                                </AuthGate>
+                              </RideProvider>
+                            </CharacterProvider>
+                          </FlightProvider>
                         </HotelProvider>
                       </RentalProvider>
                     </ReferralProvider>

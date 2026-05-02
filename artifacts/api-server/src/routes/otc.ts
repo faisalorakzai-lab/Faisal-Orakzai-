@@ -740,6 +740,169 @@ router.post("/match-driver", async (req, res) => {
 // ── HOTEL & RESIDENCY MODULE ───────────────────────────────────────────────────
 // ══════════════════════════════════════════════════════════════════════════════
 
+// ══════════════════════════════════════════════════════════════════════════════
+// ── AIRLINES & GLOBAL TRAVEL MODULE ───────────────────────────────────────────
+// ══════════════════════════════════════════════════════════════════════════════
+
+// ── POST /api/otc/flight/request ───────────────────────────────────────────────
+router.post("/flight/request", async (req, res) => {
+  const auth = requireAuth(req.headers.authorization);
+  if ("error" in auth) { res.status(auth.status).json({ error: auth.error }); return; }
+  if (!supabaseAdmin)  { res.status(503).json({ error: "Supabase not configured" }); return; }
+
+  const userId = auth.claims.sub;
+  const {
+    travel_type, from_city, to_city, departure_date,
+    travel_class, passengers, suggested_fare, proposed_fare, visa_assistance,
+  } = req.body as {
+    travel_type?: string; from_city?: string; to_city?: string;
+    departure_date?: string; travel_class?: string; passengers?: number;
+    suggested_fare?: number; proposed_fare?: number | null; visa_assistance?: boolean;
+  };
+
+  if (!travel_type?.trim())    { res.status(400).json({ error: "travel_type is required" });    return; }
+  if (!from_city?.trim())      { res.status(400).json({ error: "from_city is required" });      return; }
+  if (!to_city?.trim())        { res.status(400).json({ error: "to_city is required" });        return; }
+  if (!departure_date?.trim()) { res.status(400).json({ error: "departure_date is required" }); return; }
+  if (!travel_class?.trim())   { res.status(400).json({ error: "travel_class is required" });   return; }
+  if (!suggested_fare || suggested_fare < 1) { res.status(400).json({ error: "suggested_fare is required" }); return; }
+
+  const pax = (passengers && passengers > 0) ? passengers : 1;
+
+  const { data: booking, error: insertErr } = await supabaseAdmin
+    .from("airline_bookings")
+    .insert({
+      user_id:         userId,
+      travel_type:     travel_type.trim(),
+      from_city:       from_city.trim(),
+      to_city:         to_city.trim(),
+      departure_date,
+      travel_class:    travel_class.trim(),
+      passengers:      pax,
+      suggested_fare,
+      proposed_fare:   (typeof proposed_fare === "number" && proposed_fare > 0) ? proposed_fare : null,
+      visa_assistance: visa_assistance === true,
+      status:          "pending_approval",
+    })
+    .select()
+    .single();
+
+  if (insertErr || !booking) {
+    req.log.error({ insertErr }, "Failed to insert flight booking");
+    res.status(500).json({ error: "Failed to create booking" });
+    return;
+  }
+
+  req.log.info({ userId, from_city, to_city, travel_type }, "Flight booking request created");
+  res.status(201).json({
+    booking: {
+      id:              booking.id              as string,
+      user_id:         booking.user_id         as string,
+      travel_type:     booking.travel_type     as string,
+      from_city:       booking.from_city       as string,
+      to_city:         booking.to_city         as string,
+      departure_date:  booking.departure_date  as string,
+      travel_class:    booking.travel_class    as string,
+      passengers:      booking.passengers      as number,
+      suggested_fare:  booking.suggested_fare  as number,
+      proposed_fare:   booking.proposed_fare   as number | null,
+      visa_assistance: booking.visa_assistance as boolean,
+      status:          booking.status          as string,
+      admin_note:      booking.admin_note      as string | null,
+      final_fare:      booking.final_fare      as number | null,
+      created_at:      booking.created_at      as string,
+    },
+  });
+});
+
+// ── GET /api/otc/flight/bookings/:userId ───────────────────────────────────────
+router.get("/flight/bookings/:userId", async (req, res) => {
+  const { userId } = req.params;
+  const auth = requireAuth(req.headers.authorization);
+  if ("error" in auth) { res.status(auth.status).json({ error: auth.error }); return; }
+  if (auth.claims.sub !== userId) { res.status(403).json({ error: "Forbidden" }); return; }
+  if (!supabaseAdmin) { res.status(503).json({ error: "Supabase not configured" }); return; }
+
+  const { data, error } = await supabaseAdmin
+    .from("airline_bookings")
+    .select("*")
+    .eq("user_id", userId)
+    .order("created_at", { ascending: false });
+
+  if (error) { res.status(500).json({ error: "Failed to fetch flight bookings" }); return; }
+
+  const bookings = (data ?? []).map((row) => ({
+    id:              row.id              as string,
+    user_id:         row.user_id         as string,
+    travel_type:     row.travel_type     as string,
+    from_city:       row.from_city       as string,
+    to_city:         row.to_city         as string,
+    departure_date:  row.departure_date  as string,
+    travel_class:    row.travel_class    as string,
+    passengers:      row.passengers      as number,
+    suggested_fare:  row.suggested_fare  as number,
+    proposed_fare:   row.proposed_fare   as number | null,
+    visa_assistance: row.visa_assistance as boolean,
+    status:          row.status          as string,
+    admin_note:      row.admin_note      as string | null,
+    final_fare:      row.final_fare      as number | null,
+    created_at:      row.created_at      as string,
+  }));
+  res.json({ bookings });
+});
+
+// ── PATCH /api/otc/flight/request/:requestId/status ───────────────────────────
+router.patch("/flight/request/:requestId/status", async (req, res) => {
+  const { requestId } = req.params;
+  const auth = requireAuth(req.headers.authorization);
+  if ("error" in auth) { res.status(auth.status).json({ error: auth.error }); return; }
+  if (!supabaseAdmin)  { res.status(503).json({ error: "Supabase not configured" }); return; }
+
+  const allowed = ["confirmed", "negotiating", "cancelled"];
+  const { status, admin_note, final_fare } = req.body as {
+    status?: string; admin_note?: string; final_fare?: number;
+  };
+  if (!status || !allowed.includes(status)) {
+    res.status(400).json({ error: `status must be one of: ${allowed.join(", ")}` }); return;
+  }
+
+  const { data: updated, error } = await supabaseAdmin
+    .from("airline_bookings")
+    .update({
+      status,
+      admin_note: admin_note ?? null,
+      final_fare: final_fare ?? null,
+      updated_at: new Date().toISOString(),
+    })
+    .eq("id", requestId)
+    .select()
+    .single();
+
+  if (error || !updated) { res.status(404).json({ error: "Flight booking not found" }); return; }
+
+  req.log.info({ requestId, status, admin: auth.claims.sub }, "Flight booking status updated");
+  res.json({ message: "Status updated", status, id: requestId });
+});
+
+// ── GET /api/otc/flight/admin ─────────────────────────────────────────────────
+router.get("/flight/admin", async (req, res) => {
+  const auth = requireAuth(req.headers.authorization);
+  if ("error" in auth) { res.status(auth.status).json({ error: auth.error }); return; }
+  if (!supabaseAdmin)  { res.status(503).json({ error: "Supabase not configured" }); return; }
+
+  const statusFilter = (req.query.status as string | undefined) ?? "pending_approval";
+
+  const { data, error } = await supabaseAdmin
+    .from("airline_bookings")
+    .select("*")
+    .eq("status", statusFilter)
+    .order("created_at", { ascending: false });
+
+  if (error) { res.status(500).json({ error: "Failed to fetch admin flight requests" }); return; }
+
+  res.json({ requests: data ?? [], total: (data ?? []).length });
+});
+
 // ── GET /api/otc/hotels ────────────────────────────────────────────────────────
 router.get("/hotels", async (_req, res) => {
   if (!supabaseAdmin) { res.status(503).json({ error: "Supabase not configured" }); return; }
