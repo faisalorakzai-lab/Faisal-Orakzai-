@@ -1,5 +1,4 @@
 import { Feather } from "@expo/vector-icons";
-import Constants from "expo-constants";
 import * as Haptics from "expo-haptics";
 import React, { useEffect, useRef, useState } from "react";
 import {
@@ -10,8 +9,6 @@ import {
   View,
 } from "react-native";
 import { useColors } from "@/hooks/useColors";
-
-const GEMINI_API_KEY: string = (Constants.expoConfig?.extra as Record<string, string> | undefined)?.geminiApiKey ?? "";
 
 const VOICE_SUGGESTIONS = [
   "Book a Sovereign to DHA Phase 2",
@@ -59,51 +56,8 @@ function localParse(cmd: string): ParsedCommand {
   return { destination, rideClass };
 }
 
-async function geminiParse(command: string): Promise<ParsedCommand> {
-  if (!GEMINI_API_KEY) return localParse(command);
-  const res = await fetch(
-    `https://generativelanguage.googleapis.com/v1beta/models/gemini-2.0-flash-lite:generateContent?key=${GEMINI_API_KEY}`,
-    {
-      method: "POST",
-      headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({
-        contents: [
-          {
-            parts: [
-              {
-                text: `You are a ride-booking AI for OTC (Orakzai Transport Corporation) in Pakistan. Parse this voice command and extract the destination and ride class.
-
-Valid ride classes: "sovereign" (luxury), "autonomous" (smart), "community" (budget).
-Pakistani city locations: DHA Phase 2, Clifton Block 5, Gulshan-e-Iqbal, Saddar, PECHS Block 2, Karachi Airport, Dolmen Mall, North Nazimabad, Korangi, Bahria Town, Blue Area Islamabad, Gulberg Lahore, Liberty Market Lahore, Model Town Lahore.
-
-Voice command: "${command}"
-
-Respond with valid JSON only — no markdown, no explanation:
-{"destination": "exact location name or empty string", "rideClass": "sovereign|autonomous|community|null", "confidence": 0.0-1.0}`,
-              },
-            ],
-          },
-        ],
-        generationConfig: {
-          responseMimeType: "application/json",
-          temperature: 0.1,
-        },
-      }),
-    }
-  );
-  if (!res.ok) throw new Error("Gemini error");
-  const data = (await res.json()) as {
-    candidates?: Array<{ content?: { parts?: Array<{ text?: string }> } }>;
-  };
-  const rawText = data.candidates?.[0]?.content?.parts?.[0]?.text ?? "{}";
-  const parsed = JSON.parse(rawText) as {
-    destination?: string;
-    rideClass?: string | null;
-  };
-  return {
-    destination: parsed.destination ?? "",
-    rideClass: (parsed.rideClass as ParsedCommand["rideClass"]) ?? null,
-  };
+async function parseCommand(command: string): Promise<ParsedCommand> {
+  return localParse(command);
 }
 
 interface VoiceCommandPanelProps {
@@ -119,8 +73,7 @@ export function VoiceCommandPanel({ onParsed, onDismiss }: VoiceCommandPanelProp
   const [active, setActive] = useState(false);
   const [transcript, setTranscript] = useState("");
   const [displayText, setDisplayText] = useState("");
-  const [phase, setPhase] = useState<"idle" | "listening" | "processing" | "done" | "ai">("idle");
-  const [aiLabel, setAiLabel] = useState("");
+  const [phase, setPhase] = useState<"idle" | "listening" | "processing" | "done">("idle");
   const pulseAnim = useRef(new Animated.Value(1)).current;
   const waveAnim1 = useRef(new Animated.Value(0.3)).current;
   const waveAnim2 = useRef(new Animated.Value(0.3)).current;
@@ -183,20 +136,12 @@ export function VoiceCommandPanel({ onParsed, onDismiss }: VoiceCommandPanelProp
     setActive(false);
     setTranscript(command);
 
-    if (GEMINI_API_KEY) {
-      setPhase("ai");
-      setAiLabel("Gemini AI parsing...");
-    } else {
-      setPhase("processing");
-    }
+    setPhase("processing");
 
     try {
-      const parsed = await geminiParse(command);
+      const parsed = await parseCommand(command);
       setPhase("done");
       Haptics.notificationAsync(Haptics.NotificationFeedbackType.Success);
-      if (GEMINI_API_KEY && parsed.destination) {
-        setAiLabel(`AI: ${parsed.destination}${parsed.rideClass ? ` · ${parsed.rideClass}` : ""}`);
-      }
       setTimeout(() => {
         if (parsed.destination) {
           onParsed(parsed.destination, parsed.rideClass ?? undefined);
@@ -236,11 +181,6 @@ export function VoiceCommandPanel({ onParsed, onDismiss }: VoiceCommandPanelProp
           <Text style={[styles.title, { color: colors.foreground }]}>
             Voice Command
           </Text>
-          {GEMINI_API_KEY ? (
-            <View style={styles.aiBadge}>
-              <Text style={styles.aiBadgeText}>AI</Text>
-            </View>
-          ) : null}
         </View>
         <TouchableOpacity onPress={onDismiss}>
           <Feather name="x" size={18} color={colors.mutedForeground} />
@@ -315,18 +255,11 @@ export function VoiceCommandPanel({ onParsed, onDismiss }: VoiceCommandPanelProp
           <Text style={[styles.processing, { color: colors.mutedForeground }]}>
             Processing...
           </Text>
-        ) : phase === "ai" ? (
-          <View style={styles.aiRow}>
-            <View style={styles.aiSpinner} />
-            <Text style={[styles.processing, { color: colors.gold }]}>
-              {aiLabel}
-            </Text>
-          </View>
         ) : phase === "done" ? (
           <View style={styles.doneRow}>
             <Feather name="check-circle" size={20} color="#22C55E" />
             <Text style={[styles.doneText, { color: "#22C55E" }]}>
-              {GEMINI_API_KEY ? "Gemini Recognized" : "Command Recognized"}
+              Command Recognized
             </Text>
           </View>
         ) : (

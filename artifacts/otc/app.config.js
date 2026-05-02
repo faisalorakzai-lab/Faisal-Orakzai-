@@ -33,7 +33,6 @@ module.exports = {
       supabaseAnonKey: process.env.SUPABASE_ANON_KEY ?? "",
       mapboxToken: process.env.MAPBOX_TOKEN ?? "",
       ablyApiKey: process.env.ABLY_API_KEY ?? "",
-      geminiApiKey: process.env.GEMINI_API_KEY ?? "",
     },
   },
 };

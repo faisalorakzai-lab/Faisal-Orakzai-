@@ -80,7 +80,7 @@ Two products in one monorepo:
 | Mapbox | `MAPBOX_TOKEN` | Active | Static dark map tiles in SovereignMap |
 | Ably | `ABLY_API_KEY` | Active | Real-time driver channel in sovereign-mode |
 | Supabase | `SUPABASE_URL`, `SUPABASE_ANON_KEY` | Active | Wallet + CharacterProfile persistence |
-| Gemini | `GEMINI_API_KEY` | Active (quota-limited) | Voice command NLP via `/api/otc/parse-voice`, falls back to local parsing |
+| Gemini | `GEMINI_API_KEY` | Server-only (not exposed to client) | Reserved for future server-side NLP; voice commands use local keyword parsing |
 
 ### Supabase Tables Required
 
