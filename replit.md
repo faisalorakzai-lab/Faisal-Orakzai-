@@ -68,10 +68,15 @@ Two products in one monorepo:
 
 ## OTC Sovereign Mobility Ecosystem
 
-- **Ride booking screen**: `app/services/ride.tsx` — Mapbox dark map background, class selector, dynamic pricing, driver search.
+- **Ride booking screen**: `app/services/ride.tsx` — Full-screen Mapbox dark map background, floating bottom panel, Mapbox Places autocomplete, 3-type ride selector (OTC Bike/Prime/Lux), negotiable price field, Supabase `ride_requests` push, driver search simulation.
 - **Sovereign Mode screen**: `app/services/sovereign-mode.tsx` — In-ride interface with Ably real-time channel, live driver heartbeat events, elapsed timer, tabs (Status/Wallet/Updates/Proof).
-- **Key components**: `SovereignMap` (Mapbox static image + gold animation overlay), `VoiceCommandPanel` (Gemini AI NLP with local fallback), `VehicleClassSelector`, `DriverEquityCard`, `ProofOfRideCard`.
-- **Key contexts**: `CharacterContext` (CC tier + Supabase sync), `WalletContext` (OTC Coins + Supabase sync), `RideContext` (ride state machine), `AuthContext` (phone OTP).
+- **Key components**:
+  - `RideMapFull` — Full-screen Mapbox Static map with gold GeoJSON route line + custom markers (auto-fit viewport)
+  - `PlacesSearch` — Mapbox Geocoding API autocomplete with debounce (Pakistan-focused, proximity-ranked)
+  - `OtcRideTypeSelector` — Horizontal scroll: OTC Bike (motorbike, ×0.75), OTC Prime (car-side, ×1.0), OTC Lux (car-sports, ×1.75) with gold glow on select
+  - `SovereignMap` (Mapbox static image + gold animation overlay), `VoiceCommandPanel` (Gemini AI NLP with local fallback), `VehicleClassSelector`, `DriverEquityCard`, `ProofOfRideCard`
+- **Key contexts**: `LocationContext` (GPS + reverseGeocode, auto-fills pickup), `CharacterContext` (CC tier + Supabase sync), `WalletContext` (OTC Coins + Supabase sync), `RideContext` (ride state machine), `AuthContext` (phone OTP).
+- **Ride Request Flow**: input → ready (dropoff set) → searching (Supabase push, status: searching) → found (driver matched).
 
 ## Live Integrations (OTC)
 
@@ -84,7 +89,30 @@ Two products in one monorepo:
 
 ### Supabase Tables Required
 
-Run these in your Supabase SQL editor to enable cloud persistence:
+Run these in your Supabase SQL editor to enable cloud persistence.
+Migration file: `artifacts/otc/scripts/ride_requests_migration.sql`
+
+```sql
+CREATE TABLE IF NOT EXISTS public.ride_requests (
+  id TEXT PRIMARY KEY,
+  user_id TEXT,
+  pickup_name TEXT NOT NULL,
+  pickup_lat DOUBLE PRECISION NOT NULL,
+  pickup_lng DOUBLE PRECISION NOT NULL,
+  dropoff_name TEXT NOT NULL,
+  dropoff_lat DOUBLE PRECISION NOT NULL,
+  dropoff_lng DOUBLE PRECISION NOT NULL,
+  ride_type TEXT NOT NULL,
+  ride_type_label TEXT,
+  distance_km DOUBLE PRECISION,
+  suggested_price INTEGER,
+  offered_price INTEGER NOT NULL,
+  status TEXT NOT NULL DEFAULT 'searching',
+  created_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
+);
+ALTER TABLE public.ride_requests ENABLE ROW LEVEL SECURITY;
+```
+
 ```sql
 CREATE TABLE IF NOT EXISTS otc_character_profiles (
   user_id TEXT PRIMARY KEY,

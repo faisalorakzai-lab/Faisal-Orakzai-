@@ -5,6 +5,8 @@ import React, { useEffect, useRef, useState } from "react";
 import {
   ActivityIndicator,
   Animated,
+  Dimensions,
+  KeyboardAvoidingView,
   Platform,
   ScrollView,
   StyleSheet,
@@ -15,55 +17,33 @@ import {
 } from "react-native";
 import { useSafeAreaInsets } from "react-native-safe-area-context";
 
-import { DriverEquityCard } from "@/components/ride/DriverEquityCard";
-import { ProofOfRideCard } from "@/components/ride/ProofOfRideCard";
-import { SovereignMap } from "@/components/ride/SovereignMap";
-import { VehicleClassSelector } from "@/components/ride/VehicleClassSelector";
-import { VoiceCommandPanel } from "@/components/ride/VoiceCommandPanel";
-import { GlassCard } from "@/components/GlassCard";
-import { useCharacter } from "@/contexts/CharacterContext";
 import {
-  generateProofHash,
-  pickGridNode,
-  useRide,
-  type RideClass,
-  type RideSession,
-} from "@/contexts/RideContext";
-import { useWallet } from "@/contexts/WalletContext";
+  OtcRideTypeSelector,
+  OTC_RIDE_TYPES,
+  type OtcRideType,
+} from "@/components/ride/OtcRideTypeSelector";
+import { PlacesSearch, type PlaceResult } from "@/components/ride/PlacesSearch";
+import { RideMapFull, type MapCoord } from "@/components/ride/RideMapFull";
+import { useAuth } from "@/contexts/AuthContext";
+import { useLocation } from "@/contexts/LocationContext";
+import { useRide, type RideClass } from "@/contexts/RideContext";
+import { supabase } from "@/lib/supabase";
 import { useColors } from "@/hooks/useColors";
 
-const KARACHI_LOCATIONS = [
-  { name: "DHA Phase 2", lat: 24.7999, lng: 67.0595 },
-  { name: "Clifton Block 5", lat: 24.8114, lng: 67.0305 },
-  { name: "Gulshan-e-Iqbal", lat: 24.9205, lng: 67.1237 },
-  { name: "Saddar", lat: 24.8617, lng: 67.0176 },
-  { name: "PECHS Block 2", lat: 24.8742, lng: 67.0658 },
-  { name: "Karachi Airport", lat: 24.9008, lng: 67.1681 },
-  { name: "Dolmen Mall", lat: 24.8093, lng: 67.0274 },
-  { name: "North Nazimabad", lat: 24.9465, lng: 67.0537 },
-  { name: "Korangi", lat: 24.8278, lng: 67.1222 },
-  { name: "Bahria Town", lat: 24.8606, lng: 67.2652 },
-];
+const { height: SCREEN_H } = Dimensions.get("window");
 
 const DRIVERS = [
-  { name: "Tariq Mehmood", rating: 4.9, equityPoints: 2840, totalRides: 1243, partnerSince: "2023" },
-  { name: "Asad Ali Khan", rating: 4.8, equityPoints: 1520, totalRides: 876, partnerSince: "2024" },
-  { name: "Samiullah Baig", rating: 5.0, equityPoints: 4210, totalRides: 2108, partnerSince: "2022" },
-  { name: "Fawad Iqbal", rating: 4.7, equityPoints: 960, totalRides: 534, partnerSince: "2024" },
+  { name: "Tariq Mehmood", rating: 4.9, eta: 4 },
+  { name: "Asad Ali Khan", rating: 4.8, eta: 6 },
+  { name: "Samiullah Baig", rating: 5.0, eta: 3 },
+  { name: "Fawad Iqbal", rating: 4.7, eta: 7 },
 ];
 
-type BookingPhase =
-  | "map"
-  | "selecting"
-  | "voice"
-  | "confirming"
-  | "searching"
-  | "found"
-  | "proof";
-
 function calcDistance(
-  lat1: number, lng1: number,
-  lat2: number, lng2: number
+  lat1: number,
+  lng1: number,
+  lat2: number,
+  lng2: number
 ): number {
   const R = 6371;
   const dLat = ((lat2 - lat1) * Math.PI) / 180;
@@ -73,578 +53,825 @@ function calcDistance(
     Math.cos((lat1 * Math.PI) / 180) *
       Math.cos((lat2 * Math.PI) / 180) *
       Math.sin(dLng / 2) ** 2;
-  return parseFloat((R * 2 * Math.atan2(Math.sqrt(a), Math.sqrt(1 - a))).toFixed(1));
+  return parseFloat(
+    (R * 2 * Math.atan2(Math.sqrt(a), Math.sqrt(1 - a))).toFixed(1)
+  );
 }
 
-const BASE_RATE_PER_KM = 42;
+type Phase = "input" | "ready" | "searching" | "found";
 
-export default function SovereignRideScreen() {
+export default function OtcRideScreen() {
   const colors = useColors();
   const insets = useSafeAreaInsets();
-  const { profile, getPersonalizedPrice } = useCharacter();
-  const { addTransaction } = useWallet();
-  const { selectedClass, setSelectedClass, startRide, session, cancelRide } = useRide();
+  const { user: authUser } = useAuth();
+  const { city, district, coordinates } = useLocation();
+  const { setSelectedClass } = useRide();
 
-  const [phase, setPhase] = useState<BookingPhase>("map");
-  const [pickup, setPickup] = useState(KARACHI_LOCATIONS[0]);
-  const [dropoff, setDropoff] = useState<typeof KARACHI_LOCATIONS[0] | null>(null);
-  const [searchingDropoff, setSearchingDropoff] = useState(false);
-  const [dropoffInput, setDropoffInput] = useState("");
-  const [dropoffResults, setDropoffResults] = useState<typeof KARACHI_LOCATIONS>([]);
+  const [phase, setPhase] = useState<Phase>("input");
+  const [pickup, setPickup] = useState<MapCoord | null>(null);
+  const [dropoff, setDropoff] = useState<MapCoord | null>(null);
+  const [dropoffFocused, setDropoffFocused] = useState(false);
+  const [rideType, setRideType] = useState<OtcRideType>(OTC_RIDE_TYPES[1]);
+  const [suggestedPrice, setSuggestedPrice] = useState(0);
+  const [offeredPrice, setOfferedPrice] = useState("");
+  const [isEditingPrice, setIsEditingPrice] = useState(false);
   const [driver, setDriver] = useState(DRIVERS[0]);
-  const [currentSession, setCurrentSession] = useState<RideSession | null>(null);
-  const [showVoice, setShowVoice] = useState(false);
+  const [rideId, setRideId] = useState<string | null>(null);
 
   const searchAnim = useRef(new Animated.Value(0)).current;
   const topPad = insets.top + (Platform.OS === "web" ? 67 : 16);
 
-  const distance = dropoff
-    ? calcDistance(pickup.lat, pickup.lng, dropoff.lat, dropoff.lng)
-    : 0;
-  const classMultipliers: Record<RideClass, number> = {
-    sovereign: 1.8,
-    autonomous: 1.4,
-    community: 1.0,
-  };
-  const basePrice = Math.round(distance * BASE_RATE_PER_KM * classMultipliers[selectedClass]);
-  const finalPrice = getPersonalizedPrice(basePrice);
-  const coinsEarned = selectedClass === "sovereign" ? 8 : selectedClass === "autonomous" ? 5 : 2;
-
-  function handleDropoffSearch(text: string) {
-    setDropoffInput(text);
-    if (!text) { setDropoffResults([]); return; }
-    const filtered = KARACHI_LOCATIONS.filter(
-      (l) =>
-        l.name.toLowerCase().includes(text.toLowerCase()) &&
-        l.name !== pickup.name
-    );
-    setDropoffResults(filtered);
-  }
-
-  function selectDropoff(loc: typeof KARACHI_LOCATIONS[0]) {
-    setDropoff(loc);
-    setDropoffInput(loc.name);
-    setDropoffResults([]);
-    setSearchingDropoff(false);
-    setPhase("selecting");
-    Haptics.impactAsync(Haptics.ImpactFeedbackStyle.Light);
-  }
-
-  function handleVoiceParsed(
-    destination: string,
-    rideClass?: RideClass
-  ) {
-    const found = KARACHI_LOCATIONS.find((l) =>
-      l.name.toLowerCase().includes(destination.toLowerCase())
-    );
-    if (found) {
-      selectDropoff(found);
+  useEffect(() => {
+    if (coordinates) {
+      setPickup({
+        lat: coordinates.lat,
+        lng: coordinates.lng,
+        name: district || city || "Your Location",
+      });
     } else {
-      const pseudo = { name: destination, lat: 24.85 + Math.random() * 0.1, lng: 67.0 + Math.random() * 0.2 };
-      selectDropoff(pseudo as any);
+      setPickup({ lat: 24.8607, lng: 67.0011, name: "Karachi, Pakistan" });
     }
-    if (rideClass) setSelectedClass(rideClass);
-    setShowVoice(false);
+  }, [coordinates, city, district]);
+
+  const distanceKm =
+    pickup && dropoff
+      ? calcDistance(pickup.lat, pickup.lng, dropoff.lat, dropoff.lng)
+      : 0;
+
+  function recalcPrice(type: OtcRideType, dist: number) {
+    const p = Math.round(dist * type.baseRate);
+    setSuggestedPrice(p);
+    setOfferedPrice(p.toString());
+  }
+
+  function handleDropoffSelect(place: PlaceResult) {
+    const coord: MapCoord = { lat: place.lat, lng: place.lng, name: place.name };
+    setDropoff(coord);
+    setDropoffFocused(false);
+    const dist = pickup
+      ? calcDistance(pickup.lat, pickup.lng, place.lat, place.lng)
+      : 0;
+    recalcPrice(rideType, dist);
+    setPhase("ready");
     Haptics.notificationAsync(Haptics.NotificationFeedbackType.Success);
   }
 
-  function handleConfirmRide() {
-    if (!dropoff) return;
+  function handleRideTypeSelect(cls: RideClass, type: OtcRideType) {
+    setRideType(type);
+    setSelectedClass(cls);
+    recalcPrice(type, distanceKm);
+  }
+
+  async function handleConfirm() {
+    if (!pickup || !dropoff) return;
+    Haptics.impactAsync(Haptics.ImpactFeedbackStyle.Heavy);
+
+    const id = `OTC-${Date.now()}-${Math.random()
+      .toString(36)
+      .slice(2, 7)
+      .toUpperCase()}`;
+    setRideId(id);
     setPhase("searching");
-    Haptics.impactAsync(Haptics.ImpactFeedbackStyle.Medium);
 
-    // Simulate driver search animation
-    Animated.loop(
+    if (supabase) {
+      supabase
+        .from("ride_requests")
+        .insert({
+          id,
+          user_id: (authUser as any)?.id ?? null,
+          pickup_name: pickup.name ?? "Unknown",
+          pickup_lat: pickup.lat,
+          pickup_lng: pickup.lng,
+          dropoff_name: dropoff.name ?? "Unknown",
+          dropoff_lat: dropoff.lat,
+          dropoff_lng: dropoff.lng,
+          ride_type: rideType.id,
+          ride_type_label: rideType.label,
+          distance_km: distanceKm,
+          suggested_price: suggestedPrice,
+          offered_price: parseInt(offeredPrice, 10) || 0,
+          status: "searching",
+        })
+        .then(() => {});
+    }
+
+    const loop = Animated.loop(
       Animated.sequence([
-        Animated.timing(searchAnim, { toValue: 1, duration: 800, useNativeDriver: true }),
-        Animated.timing(searchAnim, { toValue: 0, duration: 800, useNativeDriver: true }),
+        Animated.timing(searchAnim, {
+          toValue: 1,
+          duration: 700,
+          useNativeDriver: true,
+        }),
+        Animated.timing(searchAnim, {
+          toValue: 0,
+          duration: 700,
+          useNativeDriver: true,
+        }),
       ])
-    ).start();
-
-    const chosenDriver = DRIVERS[Math.floor(Math.random() * DRIVERS.length)];
-    setDriver(chosenDriver);
+    );
+    loop.start();
 
     setTimeout(() => {
-      searchAnim.stopAnimation();
-      const sessionId = Date.now().toString() + Math.random().toString(36).substring(2, 8);
-      const gridNode = pickGridNode();
-      const partial = {
-        id: sessionId,
-        rideClass: selectedClass,
-        pickup: { name: pickup.name, lat: pickup.lat, lng: pickup.lng },
-        dropoff: { name: dropoff.name, lat: dropoff.lat, lng: dropoff.lng },
-        distance,
-        basePrice,
-        finalPrice,
-        discountApplied: basePrice - finalPrice,
-        coinsEarned,
-        driverName: chosenDriver.name,
-        driverRating: chosenDriver.rating,
-        driverEquityPoints: chosenDriver.equityPoints,
-        startedAt: Date.now(),
-        gridNode,
-      };
-      const hash = generateProofHash(partial);
-      const newSession: RideSession = { ...partial, proofHash: hash };
-      setCurrentSession(newSession);
+      loop.stop();
+      searchAnim.setValue(0);
+      setDriver(DRIVERS[Math.floor(Math.random() * DRIVERS.length)]);
       setPhase("found");
       Haptics.notificationAsync(Haptics.NotificationFeedbackType.Success);
-    }, 2500);
+    }, 2600);
   }
 
   function handleStartRide() {
-    if (!currentSession) return;
-    startRide(currentSession);
+    Haptics.impactAsync(Haptics.ImpactFeedbackStyle.Medium);
     router.push("/services/sovereign-mode");
   }
 
-  function handleProofDone() {
-    cancelRide();
-    router.back();
+  function resetRide() {
+    setPhase("input");
+    setDropoff(null);
+    setDropoffFocused(false);
+    setOfferedPrice("");
+    setSuggestedPrice(0);
+    setRideId(null);
+    searchAnim.setValue(0);
   }
 
-  const characterTierColors: Record<string, string> = {
-    Pioneer: "#8A8060",
-    Elite: "#A78BFA",
-    Sovereign: "#FFD700",
-    Apex: "#FF6B35",
-  };
-  const tierColor = characterTierColors[profile.tier] ?? colors.gold;
+  const offeredNum = parseInt(offeredPrice, 10) || 0;
+  const priceDiff = offeredNum - suggestedPrice;
 
   return (
-    <View style={[styles.root, { backgroundColor: colors.background }]}>
-      <ScrollView
-        contentContainerStyle={[
-          styles.scroll,
-          {
-            paddingTop: topPad,
-            paddingBottom: insets.bottom + (Platform.OS === "web" ? 34 : 100),
-          },
+    <View style={styles.root}>
+      {/* ── Full-screen map background ── */}
+      <RideMapFull
+        pickup={pickup}
+        dropoff={dropoff}
+        style={StyleSheet.absoluteFill}
+      />
+
+      {/* ── Top bar ── */}
+      <View
+        style={[
+          styles.topBar,
+          { paddingTop: topPad, paddingHorizontal: 20 },
         ]}
-        showsVerticalScrollIndicator={false}
-        keyboardShouldPersistTaps="handled"
       >
-        {/* Header */}
-        <View style={styles.headerRow}>
-          <TouchableOpacity onPress={() => router.back()} style={styles.backBtn}>
-            <Feather name="arrow-left" size={22} color={colors.gold} />
-          </TouchableOpacity>
-          <View>
-            <Text style={[styles.screenTitle, { color: colors.gold }]}>
-              Sovereign Ride
-            </Text>
-            <Text style={[styles.screenSub, { color: colors.mutedForeground }]}>
-              Orakzai Mobility Grid
-            </Text>
-          </View>
-          <TouchableOpacity
-            style={[styles.voiceBtn, { borderColor: colors.glassBorder, borderRadius: 20 }]}
-            onPress={() => {
-              setShowVoice(!showVoice);
-              Haptics.impactAsync(Haptics.ImpactFeedbackStyle.Light);
-            }}
-            activeOpacity={0.8}
-          >
-            <Feather name="mic" size={18} color={showVoice ? colors.gold : colors.mutedForeground} />
-          </TouchableOpacity>
+        <TouchableOpacity
+          style={styles.backBtn}
+          onPress={() => router.back()}
+          activeOpacity={0.8}
+        >
+          <Feather name="arrow-left" size={20} color="#FFD700" />
+        </TouchableOpacity>
+
+        <View style={styles.titleBadge}>
+          <Text style={styles.titleText}>OTC RIDE</Text>
         </View>
 
-        {/* Character Credits Bar */}
-        <GlassCard variant="gold" style={styles.creditsCard}>
-          <View style={styles.creditsRow}>
-            <View style={styles.creditsLeft}>
-              <Feather name="award" size={16} color={tierColor} />
-              <Text style={[styles.tierName, { color: tierColor }]}>
-                {profile.tier}
-              </Text>
-              <View style={[styles.tierBadge, { backgroundColor: `${tierColor}18`, borderRadius: 4 }]}>
-                <Text style={[styles.tierBadgeText, { color: tierColor }]}>
-                  CC {profile.credits}
-                </Text>
-              </View>
-            </View>
-            <View style={styles.creditsRight}>
-              {profile.discountRate > 0 && (
-                <View style={styles.discountFlag}>
-                  <Feather name="percent" size={12} color="#22C55E" />
-                  <Text style={styles.discountFlagText}>
-                    {Math.round(profile.discountRate * 100)}% discount active
-                  </Text>
-                </View>
-              )}
-              <Text style={[styles.creditsHint, { color: colors.mutedForeground }]}>
-                Earn credits per ride
-              </Text>
-            </View>
-          </View>
-        </GlassCard>
-
-        {/* Voice Panel */}
-        {showVoice && (
-          <VoiceCommandPanel
-            onParsed={handleVoiceParsed}
-            onDismiss={() => setShowVoice(false)}
-          />
+        {phase !== "input" && (
+          <TouchableOpacity
+            style={styles.resetBtn}
+            onPress={resetRide}
+            activeOpacity={0.8}
+          >
+            <Feather name="refresh-ccw" size={16} color="#888" />
+          </TouchableOpacity>
         )}
+        {phase === "input" && <View style={{ width: 40 }} />}
+      </View>
 
-        {/* Map */}
-        <SovereignMap
-          pickupLabel={pickup.name}
-          dropoffLabel={dropoff?.name}
-        />
-
-        {/* Location Inputs */}
-        <GlassCard style={styles.locationCard}>
-          {/* Pickup */}
-          <View style={styles.locationRow}>
-            <View style={[styles.locationDot, { backgroundColor: colors.gold }]} />
-            <View style={styles.locationInput}>
-              <Text style={[styles.locationLabel, { color: colors.mutedForeground }]}>
-                PICKUP
-              </Text>
-              <Text style={[styles.locationValue, { color: colors.foreground }]}>
-                {pickup.name}
-              </Text>
-            </View>
-            <Feather name="map-pin" size={16} color={colors.gold} />
-          </View>
-
-          <View style={[styles.locationDivider, { backgroundColor: colors.border }]} />
-
-          {/* Dropoff */}
-          <View style={styles.locationRow}>
-            <View style={[styles.locationDot, { backgroundColor: dropoff ? "#22C55E" : colors.mutedForeground }]} />
-            <View style={styles.locationInput}>
-              <Text style={[styles.locationLabel, { color: colors.mutedForeground }]}>
-                DESTINATION
-              </Text>
-              {searchingDropoff ? (
-                <TextInput
-                  style={[styles.locationTextInput, { color: colors.foreground }]}
-                  value={dropoffInput}
-                  onChangeText={handleDropoffSearch}
-                  placeholder="Search destination..."
-                  placeholderTextColor={colors.mutedForeground}
-                  autoFocus
-                  returnKeyType="search"
-                />
-              ) : (
-                <TouchableOpacity onPress={() => setSearchingDropoff(true)}>
-                  <Text
-                    style={[
-                      styles.locationValue,
-                      { color: dropoff ? colors.foreground : colors.mutedForeground },
-                    ]}
-                  >
-                    {dropoff ? dropoff.name : "Select destination"}
-                  </Text>
-                </TouchableOpacity>
-              )}
-            </View>
-            <TouchableOpacity onPress={() => setSearchingDropoff(true)}>
-              <Feather name="search" size={16} color={colors.mutedForeground} />
-            </TouchableOpacity>
-          </View>
-
-          {/* Search results */}
-          {dropoffResults.length > 0 && (
-            <View style={styles.results}>
-              {dropoffResults.map((loc, i) => (
-                <TouchableOpacity
-                  key={i}
-                  style={[
-                    styles.resultItem,
-                    i < dropoffResults.length - 1 && { borderBottomWidth: 1, borderBottomColor: colors.border },
-                  ]}
-                  onPress={() => selectDropoff(loc)}
-                  activeOpacity={0.7}
-                >
-                  <Feather name="map-pin" size={14} color={colors.mutedForeground} />
-                  <Text style={[styles.resultText, { color: colors.foreground }]}>
-                    {loc.name}
-                  </Text>
-                </TouchableOpacity>
-              ))}
-            </View>
-          )}
-        </GlassCard>
-
-        {/* Class Selector — shown after dropoff selected */}
-        {dropoff && phase !== "searching" && phase !== "found" && phase !== "proof" && (
-          <>
-            <View style={styles.sectionHeader}>
-              <Text style={[styles.sectionTitle, { color: colors.foreground }]}>
-                Select Class
-              </Text>
-              {distance > 0 && (
-                <Text style={[styles.distance, { color: colors.mutedForeground }]}>
-                  {distance} km
-                </Text>
-              )}
-            </View>
-            <VehicleClassSelector
-              selected={selectedClass}
-              onSelect={setSelectedClass}
-              basePrice={Math.round(distance * BASE_RATE_PER_KM)}
-              personalizedPrice={getPersonalizedPrice}
-              discountRate={profile.discountRate}
-            />
-          </>
-        )}
-
-        {/* Pricing Breakdown */}
-        {dropoff && phase !== "searching" && phase !== "found" && phase !== "proof" && basePrice > 0 && (
-          <GlassCard style={styles.pricingCard}>
-            <Text style={[styles.pricingTitle, { color: colors.foreground }]}>
-              Autonomous Dynamic Pricing
-            </Text>
-            <View style={styles.pricingRow}>
-              <Text style={[styles.pricingKey, { color: colors.mutedForeground }]}>
-                Distance ({distance} km)
-              </Text>
-              <Text style={[styles.pricingVal, { color: colors.foreground }]}>
-                PKR {Math.round(distance * BASE_RATE_PER_KM).toLocaleString()}
-              </Text>
-            </View>
-            <View style={styles.pricingRow}>
-              <Text style={[styles.pricingKey, { color: colors.mutedForeground }]}>
-                Class Multiplier ({selectedClass})
-              </Text>
-              <Text style={[styles.pricingVal, { color: colors.foreground }]}>
-                ×{classMultipliers[selectedClass].toFixed(1)}
-              </Text>
-            </View>
-            {profile.discountRate > 0 && (
-              <View style={styles.pricingRow}>
-                <Text style={[styles.pricingKey, { color: "#22C55E" }]}>
-                  Character Credit Discount ({profile.tier})
-                </Text>
-                <Text style={[styles.pricingVal, { color: "#22C55E" }]}>
-                  −PKR {(basePrice - finalPrice).toLocaleString()}
-                </Text>
-              </View>
-            )}
-            <View style={[styles.pricingDivider, { backgroundColor: colors.border }]} />
-            <View style={styles.pricingRow}>
-              <Text style={[styles.pricingTotal, { color: colors.foreground }]}>
-                Total
-              </Text>
-              <Text style={[styles.pricingTotalVal, { color: colors.gold }]}>
-                PKR {finalPrice.toLocaleString()}
-              </Text>
-            </View>
-            <View style={styles.coinsEarnRow}>
-              <Feather name="star" size={13} color={colors.gold} />
-              <Text style={[styles.coinsEarn, { color: colors.mutedForeground }]}>
-                You'll earn{" "}
-                <Text style={{ color: colors.gold }}>{coinsEarned} OTC Coins</Text> for this ride
-              </Text>
-            </View>
-          </GlassCard>
-        )}
-
-        {/* Searching phase */}
-        {phase === "searching" && (
-          <GlassCard variant="gold" style={styles.searchingCard}>
-            <ActivityIndicator color={colors.gold} size="large" />
-            <Text style={[styles.searchingTitle, { color: colors.foreground }]}>
-              Scanning Sovereign Grid...
-            </Text>
-            <Text style={[styles.searchingSub, { color: colors.mutedForeground }]}>
-              Matching you with the nearest{" "}
-              <Text style={{ color: colors.gold }}>
-                {selectedClass.charAt(0).toUpperCase() + selectedClass.slice(1)}
-              </Text>{" "}
-              partner
-            </Text>
-          </GlassCard>
-        )}
-
-        {/* Driver Found */}
-        {phase === "found" && currentSession && (
-          <>
-            <Text style={[styles.sectionTitle, { color: colors.foreground }]}>
-              Partner Found
-            </Text>
-            <DriverEquityCard
-              name={driver.name}
-              rating={driver.rating}
-              equityPoints={driver.equityPoints}
-              totalRides={driver.totalRides}
-              partnerSince={driver.partnerSince}
-              eta={Math.round(3 + Math.random() * 6)}
-              rideClass={selectedClass}
-            />
-            <ProofOfRideCard
-              hash={currentSession.proofHash}
-              gridNode={currentSession.gridNode}
-              rideClass={selectedClass}
-              timestamp={currentSession.startedAt}
-            />
-          </>
-        )}
-      </ScrollView>
-
-      {/* Bottom CTA */}
-      {phase !== "searching" && phase !== "proof" && (
+      {/* ── Bottom panel ── */}
+      <KeyboardAvoidingView
+        behavior={Platform.OS === "ios" ? "padding" : "height"}
+        style={styles.kavWrapper}
+        keyboardVerticalOffset={Platform.OS === "ios" ? 0 : 0}
+      >
         <View
           style={[
-            styles.bottomBar,
+            styles.bottomPanel,
             {
-              paddingBottom: insets.bottom + (Platform.OS === "web" ? 34 : 16),
-              backgroundColor: colors.background,
-              borderTopColor: colors.border,
+              paddingBottom:
+                insets.bottom + (Platform.OS === "web" ? 24 : 12),
+              maxHeight: SCREEN_H * 0.72,
             },
           ]}
         >
-          {phase === "found" ? (
-            <TouchableOpacity
-              style={[styles.ctaBtn, { backgroundColor: colors.gold, borderRadius: colors.radius }]}
-              onPress={handleStartRide}
-              activeOpacity={0.85}
-            >
-              <Feather name="play" size={18} color={colors.primaryForeground} />
-              <Text style={[styles.ctaBtnText, { color: colors.primaryForeground }]}>
-                Activate Sovereign Mode
-              </Text>
-            </TouchableOpacity>
-          ) : (
-            <TouchableOpacity
-              style={[
-                styles.ctaBtn,
-                {
-                  backgroundColor: dropoff && basePrice > 0 ? colors.gold : colors.muted,
-                  borderRadius: colors.radius,
-                },
-              ]}
-              onPress={dropoff && basePrice > 0 ? handleConfirmRide : undefined}
-              activeOpacity={0.85}
-              disabled={!dropoff || basePrice === 0}
-            >
-              <Feather
-                name="navigation"
-                size={18}
-                color={dropoff && basePrice > 0 ? colors.primaryForeground : colors.mutedForeground}
-              />
-              <Text
-                style={[
-                  styles.ctaBtnText,
-                  {
-                    color:
-                      dropoff && basePrice > 0
-                        ? colors.primaryForeground
-                        : colors.mutedForeground,
-                  },
-                ]}
-              >
-                {!dropoff
-                  ? "Select a Destination"
-                  : `Confirm · PKR ${finalPrice.toLocaleString()}`}
-              </Text>
-            </TouchableOpacity>
+          <View style={styles.dragHandle} />
+
+          <ScrollView
+            showsVerticalScrollIndicator={false}
+            keyboardShouldPersistTaps="handled"
+            contentContainerStyle={styles.panelScroll}
+          >
+            {/* ── Input Card ── */}
+            {(phase === "input" || phase === "ready") && (
+              <View style={styles.inputCard}>
+                {/* Pickup */}
+                <PlacesSearch
+                  label="PICKUP"
+                  placeholder="Detecting location…"
+                  value={pickup?.name ?? ""}
+                  onSelect={(p) =>
+                    setPickup({ lat: p.lat, lng: p.lng, name: p.name })
+                  }
+                  proximityLng={pickup?.lng ?? 67.0011}
+                  proximityLat={pickup?.lat ?? 24.8607}
+                  dotColor="#FFD700"
+                  readOnly
+                  onPress={() => {}}
+                />
+
+                <View style={styles.inputDivider} />
+
+                {/* Dropoff */}
+                {dropoffFocused ? (
+                  <PlacesSearch
+                    label="DESTINATION"
+                    placeholder="Where to?"
+                    value={dropoff?.name ?? ""}
+                    onSelect={handleDropoffSelect}
+                    proximityLng={pickup?.lng ?? 67.0011}
+                    proximityLat={pickup?.lat ?? 24.8607}
+                    dotColor="#22C55E"
+                  />
+                ) : (
+                  <PlacesSearch
+                    label="DESTINATION"
+                    placeholder="Where to?"
+                    value={dropoff?.name ?? ""}
+                    onSelect={handleDropoffSelect}
+                    proximityLng={pickup?.lng ?? 67.0011}
+                    proximityLat={pickup?.lat ?? 24.8607}
+                    dotColor={dropoff ? "#22C55E" : "#555"}
+                    readOnly
+                    onPress={() => setDropoffFocused(true)}
+                  />
+                )}
+              </View>
+            )}
+
+            {/* ── Ride Type Selector ── */}
+            {(phase === "ready" || phase === "found") && (
+              <>
+                <View style={styles.sectionHeader}>
+                  <Text style={styles.sectionTitle}>Choose Ride</Text>
+                  {distanceKm > 0 && (
+                    <View style={styles.distancePill}>
+                      <Feather name="map" size={11} color="#FFD700" />
+                      <Text style={styles.distanceText}>{distanceKm} km</Text>
+                    </View>
+                  )}
+                </View>
+
+                <OtcRideTypeSelector
+                  selected={rideType.id}
+                  onSelect={handleRideTypeSelect}
+                  distanceKm={distanceKm}
+                />
+
+                {/* ── Price Negotiation Card ── */}
+                {suggestedPrice > 0 && (
+                  <View style={styles.priceCard}>
+                    <View style={styles.priceRow}>
+                      <View style={styles.priceSide}>
+                        <Text style={styles.priceLabelSmall}>
+                          SUGGESTED
+                        </Text>
+                        <Text style={styles.suggestedAmt}>
+                          PKR {suggestedPrice.toLocaleString()}
+                        </Text>
+                      </View>
+
+                      <View style={styles.priceVDivider} />
+
+                      <View style={styles.priceSide}>
+                        <Text style={styles.priceLabelSmall}>
+                          YOUR OFFER
+                        </Text>
+                        {isEditingPrice ? (
+                          <TextInput
+                            style={styles.priceInput}
+                            value={offeredPrice}
+                            onChangeText={setOfferedPrice}
+                            keyboardType="numeric"
+                            onBlur={() => setIsEditingPrice(false)}
+                            autoFocus
+                            selectTextOnFocus
+                            returnKeyType="done"
+                          />
+                        ) : (
+                          <TouchableOpacity
+                            style={styles.offerRow}
+                            onPress={() => {
+                              setIsEditingPrice(true);
+                              Haptics.impactAsync(
+                                Haptics.ImpactFeedbackStyle.Light
+                              );
+                            }}
+                            activeOpacity={0.7}
+                          >
+                            <Text style={styles.offeredAmt}>
+                              PKR {offeredNum.toLocaleString()}
+                            </Text>
+                            <Feather
+                              name="edit-2"
+                              size={12}
+                              color="#FFD700"
+                            />
+                          </TouchableOpacity>
+                        )}
+                      </View>
+                    </View>
+
+                    {priceDiff !== 0 && (
+                      <View style={styles.diffRow}>
+                        <Feather
+                          name={
+                            priceDiff < 0 ? "trending-down" : "trending-up"
+                          }
+                          size={12}
+                          color={priceDiff < 0 ? "#34D399" : "#F87171"}
+                        />
+                        <Text
+                          style={[
+                            styles.diffText,
+                            {
+                              color:
+                                priceDiff < 0 ? "#34D399" : "#F87171",
+                            },
+                          ]}
+                        >
+                          {priceDiff < 0
+                            ? `PKR ${Math.abs(priceDiff)} below suggested`
+                            : `PKR ${priceDiff} above suggested`}
+                        </Text>
+                      </View>
+                    )}
+
+                    <View style={styles.priceHintRow}>
+                      <Feather name="info" size={10} color="#444" />
+                      <Text style={styles.priceHintText}>
+                        Tap offer to edit · PKR 0 accepted
+                      </Text>
+                    </View>
+                  </View>
+                )}
+              </>
+            )}
+
+            {/* ── Searching Phase ── */}
+            {phase === "searching" && (
+              <View style={styles.searchingCard}>
+                <Animated.View
+                  style={[
+                    styles.searchPulse,
+                    {
+                      opacity: searchAnim.interpolate({
+                        inputRange: [0, 1],
+                        outputRange: [0.15, 0.45],
+                      }),
+                      transform: [
+                        {
+                          scale: searchAnim.interpolate({
+                            inputRange: [0, 1],
+                            outputRange: [0.85, 1.15],
+                          }),
+                        },
+                      ],
+                    },
+                  ]}
+                />
+                <ActivityIndicator color="#FFD700" size="large" />
+                <Text style={styles.searchingTitle}>
+                  Scanning OTC Grid…
+                </Text>
+                <Text style={styles.searchingSub}>
+                  Finding nearest{" "}
+                  <Text style={{ color: "#FFD700" }}>{rideType.label}</Text>{" "}
+                  partner
+                </Text>
+                {rideId && (
+                  <Text style={styles.rideIdText}>#{rideId}</Text>
+                )}
+              </View>
+            )}
+
+            {/* ── Driver Found ── */}
+            {phase === "found" && (
+              <View style={styles.foundCard}>
+                <View style={styles.foundBadgeRow}>
+                  <Feather name="check-circle" size={14} color="#22C55E" />
+                  <Text style={styles.foundBadgeText}>Driver Matched</Text>
+                </View>
+                <View style={styles.driverRow}>
+                  <View style={styles.driverAvatar}>
+                    <Text style={styles.driverInitial}>
+                      {driver.name.charAt(0)}
+                    </Text>
+                  </View>
+                  <View style={{ flex: 1 }}>
+                    <Text style={styles.driverName}>{driver.name}</Text>
+                    <View style={styles.driverMeta}>
+                      <Feather name="star" size={11} color="#FFD700" />
+                      <Text style={styles.driverRating}>{driver.rating}</Text>
+                      <Text style={styles.driverEta}>
+                        · {driver.eta} min away
+                      </Text>
+                    </View>
+                  </View>
+                  <View style={styles.rideTypePill}>
+                    <Text style={styles.rideTypePillText}>
+                      {rideType.label}
+                    </Text>
+                  </View>
+                </View>
+                <View style={styles.foundPriceRow}>
+                  <Text style={styles.foundPriceLabel}>Agreed Price</Text>
+                  <Text style={styles.foundPrice}>
+                    PKR {offeredNum.toLocaleString()}
+                  </Text>
+                </View>
+              </View>
+            )}
+          </ScrollView>
+
+          {/* ── CTA Button ── */}
+          {phase !== "searching" && (
+            <View style={styles.ctaWrap}>
+              {phase === "found" ? (
+                <TouchableOpacity
+                  style={styles.ctaBtnActive}
+                  onPress={handleStartRide}
+                  activeOpacity={0.85}
+                >
+                  <Feather name="play" size={18} color="#000" />
+                  <Text style={styles.ctaBtnText}>Activate Ride Mode</Text>
+                </TouchableOpacity>
+              ) : phase === "ready" && dropoff ? (
+                <TouchableOpacity
+                  style={styles.ctaBtnActive}
+                  onPress={handleConfirm}
+                  activeOpacity={0.85}
+                >
+                  <Feather name="navigation" size={18} color="#000" />
+                  <Text style={styles.ctaBtnText}>
+                    Confirm OTC Request · PKR {offeredNum.toLocaleString()}
+                  </Text>
+                </TouchableOpacity>
+              ) : (
+                <View style={styles.ctaBtnDisabled}>
+                  <Feather name="map-pin" size={18} color="#444" />
+                  <Text style={[styles.ctaBtnText, { color: "#444" }]}>
+                    Enter Destination to Continue
+                  </Text>
+                </View>
+              )}
+            </View>
           )}
         </View>
-      )}
+      </KeyboardAvoidingView>
     </View>
   );
 }
 
 const styles = StyleSheet.create({
-  root: { flex: 1 },
-  scroll: { paddingHorizontal: 20, gap: 16 },
-  headerRow: {
+  root: { flex: 1, backgroundColor: "#000" },
+
+  topBar: {
+    position: "absolute",
+    top: 0,
+    left: 0,
+    right: 0,
     flexDirection: "row",
     alignItems: "center",
-    gap: 12,
-    marginBottom: 4,
+    justifyContent: "space-between",
+    paddingBottom: 12,
+    zIndex: 10,
   },
-  backBtn: { padding: 4 },
-  screenTitle: { fontSize: 20, fontFamily: "Inter_700Bold", letterSpacing: 0.3 },
-  screenSub: { fontSize: 11, fontFamily: "Inter_400Regular", letterSpacing: 0.5 },
-  voiceBtn: {
-    marginLeft: "auto",
+  backBtn: {
     width: 40,
     height: 40,
+    borderRadius: 20,
+    backgroundColor: "rgba(0,0,0,0.72)",
     borderWidth: 1,
+    borderColor: "rgba(255,215,0,0.25)",
     alignItems: "center",
     justifyContent: "center",
   },
-  creditsCard: { padding: 14 },
-  creditsRow: {
-    flexDirection: "row",
+  titleBadge: {
+    backgroundColor: "rgba(0,0,0,0.72)",
+    borderWidth: 1,
+    borderColor: "rgba(255,215,0,0.25)",
+    borderRadius: 20,
+    paddingHorizontal: 18,
+    paddingVertical: 9,
+  },
+  titleText: {
+    fontSize: 13,
+    fontFamily: "Inter_700Bold",
+    color: "#FFD700",
+    letterSpacing: 2,
+  },
+  resetBtn: {
+    width: 40,
+    height: 40,
+    borderRadius: 20,
+    backgroundColor: "rgba(0,0,0,0.72)",
+    borderWidth: 1,
+    borderColor: "rgba(255,255,255,0.08)",
     alignItems: "center",
-    justifyContent: "space-between",
+    justifyContent: "center",
   },
-  creditsLeft: { flexDirection: "row", alignItems: "center", gap: 8 },
-  tierName: { fontSize: 14, fontFamily: "Inter_700Bold" },
-  tierBadge: { paddingHorizontal: 8, paddingVertical: 3 },
-  tierBadgeText: { fontSize: 11, fontFamily: "Inter_700Bold", letterSpacing: 0.5 },
-  creditsRight: { alignItems: "flex-end", gap: 3 },
-  discountFlag: { flexDirection: "row", alignItems: "center", gap: 4 },
-  discountFlagText: { fontSize: 11, fontFamily: "Inter_500Medium", color: "#22C55E" },
-  creditsHint: { fontSize: 11, fontFamily: "Inter_400Regular" },
-  locationCard: { padding: 14, gap: 0 },
-  locationRow: {
-    flexDirection: "row",
-    alignItems: "center",
-    paddingVertical: 10,
-    gap: 12,
+
+  kavWrapper: {
+    position: "absolute",
+    bottom: 0,
+    left: 0,
+    right: 0,
   },
-  locationDot: { width: 10, height: 10, borderRadius: 5 },
-  locationInput: { flex: 1 },
-  locationLabel: { fontSize: 9, fontFamily: "Inter_700Bold", letterSpacing: 1, marginBottom: 2 },
-  locationValue: { fontSize: 15, fontFamily: "Inter_500Medium" },
-  locationTextInput: {
-    fontSize: 15,
-    fontFamily: "Inter_500Medium",
-    padding: 0,
-    margin: 0,
-  },
-  locationDivider: { height: 1, marginLeft: 22 },
-  results: {
-    marginTop: 8,
+  bottomPanel: {
+    backgroundColor: "rgba(8,8,8,0.97)",
+    borderTopLeftRadius: 24,
+    borderTopRightRadius: 24,
     borderTopWidth: 1,
-    borderTopColor: "rgba(255,215,0,0.08)",
-    paddingTop: 8,
+    borderLeftWidth: 1,
+    borderRightWidth: 1,
+    borderColor: "rgba(255,215,0,0.12)",
+    paddingTop: 10,
+    paddingHorizontal: 20,
   },
-  resultItem: {
-    flexDirection: "row",
-    alignItems: "center",
-    gap: 10,
-    paddingVertical: 10,
+  dragHandle: {
+    width: 40,
+    height: 4,
+    borderRadius: 2,
+    backgroundColor: "rgba(255,215,0,0.25)",
+    alignSelf: "center",
+    marginBottom: 16,
   },
-  resultText: { fontSize: 14, fontFamily: "Inter_500Medium" },
+  panelScroll: { gap: 16, paddingBottom: 8 },
+
+  inputCard: {
+    backgroundColor: "#111",
+    borderRadius: 16,
+    borderWidth: 1,
+    borderColor: "rgba(255,215,0,0.15)",
+    paddingHorizontal: 16,
+    paddingVertical: 4,
+  },
+  inputDivider: {
+    height: 1,
+    backgroundColor: "rgba(255,215,0,0.08)",
+    marginLeft: 22,
+  },
+
   sectionHeader: {
     flexDirection: "row",
-    justifyContent: "space-between",
     alignItems: "center",
+    justifyContent: "space-between",
   },
-  sectionTitle: { fontSize: 18, fontFamily: "Inter_700Bold" },
-  distance: { fontSize: 13, fontFamily: "Inter_500Medium" },
-  pricingCard: { padding: 16, gap: 10 },
-  pricingTitle: { fontSize: 14, fontFamily: "Inter_600SemiBold", marginBottom: 4 },
-  pricingRow: { flexDirection: "row", justifyContent: "space-between", alignItems: "center" },
-  pricingKey: { fontSize: 13, fontFamily: "Inter_400Regular", flex: 1, marginRight: 8 },
-  pricingVal: { fontSize: 13, fontFamily: "Inter_600SemiBold" },
-  pricingDivider: { height: 1 },
-  pricingTotal: { fontSize: 15, fontFamily: "Inter_700Bold" },
-  pricingTotalVal: { fontSize: 20, fontFamily: "Inter_700Bold" },
-  coinsEarnRow: { flexDirection: "row", alignItems: "center", gap: 6 },
-  coinsEarn: { fontSize: 12, fontFamily: "Inter_400Regular" },
-  searchingCard: { padding: 28, alignItems: "center", gap: 14 },
-  searchingTitle: { fontSize: 18, fontFamily: "Inter_700Bold" },
-  searchingSub: { fontSize: 14, fontFamily: "Inter_400Regular", textAlign: "center", lineHeight: 20 },
-  bottomBar: {
-    paddingHorizontal: 20,
-    paddingTop: 12,
+  sectionTitle: {
+    fontSize: 13,
+    fontFamily: "Inter_700Bold",
+    color: "#fff",
+    letterSpacing: 0.5,
+  },
+  distancePill: {
+    flexDirection: "row",
+    alignItems: "center",
+    gap: 4,
+    backgroundColor: "rgba(255,215,0,0.1)",
+    borderRadius: 12,
+    paddingHorizontal: 10,
+    paddingVertical: 4,
+  },
+  distanceText: {
+    fontSize: 12,
+    fontFamily: "Inter_700Bold",
+    color: "#FFD700",
+  },
+
+  priceCard: {
+    backgroundColor: "#111",
+    borderRadius: 16,
+    borderWidth: 1,
+    borderColor: "rgba(255,215,0,0.18)",
+    padding: 16,
+    gap: 10,
+  },
+  priceRow: {
+    flexDirection: "row",
+    alignItems: "center",
+    gap: 0,
+  },
+  priceSide: { flex: 1, gap: 4 },
+  priceLabelSmall: {
+    fontSize: 9,
+    fontFamily: "Inter_700Bold",
+    color: "#555",
+    letterSpacing: 1,
+  },
+  suggestedAmt: {
+    fontSize: 20,
+    fontFamily: "Inter_700Bold",
+    color: "#888",
+  },
+  priceVDivider: {
+    width: 1,
+    height: 44,
+    backgroundColor: "rgba(255,215,0,0.12)",
+    marginHorizontal: 16,
+  },
+  offerRow: { flexDirection: "row", alignItems: "center", gap: 8 },
+  offeredAmt: {
+    fontSize: 22,
+    fontFamily: "Inter_700Bold",
+    color: "#FFD700",
+  },
+  priceInput: {
+    fontSize: 22,
+    fontFamily: "Inter_700Bold",
+    color: "#FFD700",
+    padding: 0,
+    margin: 0,
+    minWidth: 80,
+  },
+  diffRow: {
+    flexDirection: "row",
+    alignItems: "center",
+    gap: 6,
+  },
+  diffText: { fontSize: 12, fontFamily: "Inter_500Medium" },
+  priceHintRow: {
+    flexDirection: "row",
+    alignItems: "center",
+    gap: 5,
+  },
+  priceHintText: {
+    fontSize: 10,
+    fontFamily: "Inter_400Regular",
+    color: "#444",
+  },
+
+  searchingCard: {
+    backgroundColor: "#111",
+    borderRadius: 16,
+    borderWidth: 1,
+    borderColor: "rgba(255,215,0,0.18)",
+    padding: 28,
+    alignItems: "center",
+    gap: 12,
+    position: "relative",
+    overflow: "hidden",
+    minHeight: 160,
+  },
+  searchPulse: {
+    position: "absolute",
+    width: 200,
+    height: 200,
+    borderRadius: 100,
+    backgroundColor: "#FFD700",
+    alignSelf: "center",
+  },
+  searchingTitle: {
+    fontSize: 17,
+    fontFamily: "Inter_700Bold",
+    color: "#fff",
+    letterSpacing: 0.3,
+  },
+  searchingSub: {
+    fontSize: 13,
+    fontFamily: "Inter_400Regular",
+    color: "#888",
+    textAlign: "center",
+  },
+  rideIdText: {
+    fontSize: 10,
+    fontFamily: "Inter_400Regular",
+    color: "#555",
+    letterSpacing: 0.5,
+    marginTop: 4,
+  },
+
+  foundCard: {
+    backgroundColor: "#111",
+    borderRadius: 16,
+    borderWidth: 1,
+    borderColor: "rgba(34,197,94,0.25)",
+    padding: 16,
+    gap: 14,
+  },
+  foundBadgeRow: {
+    flexDirection: "row",
+    alignItems: "center",
+    gap: 6,
+  },
+  foundBadgeText: {
+    fontSize: 12,
+    fontFamily: "Inter_700Bold",
+    color: "#22C55E",
+    letterSpacing: 0.5,
+  },
+  driverRow: {
+    flexDirection: "row",
+    alignItems: "center",
+    gap: 12,
+  },
+  driverAvatar: {
+    width: 44,
+    height: 44,
+    borderRadius: 22,
+    backgroundColor: "rgba(255,215,0,0.12)",
+    borderWidth: 1.5,
+    borderColor: "#FFD700",
+    alignItems: "center",
+    justifyContent: "center",
+  },
+  driverInitial: {
+    fontSize: 18,
+    fontFamily: "Inter_700Bold",
+    color: "#FFD700",
+  },
+  driverName: {
+    fontSize: 15,
+    fontFamily: "Inter_700Bold",
+    color: "#fff",
+  },
+  driverMeta: {
+    flexDirection: "row",
+    alignItems: "center",
+    gap: 4,
+    marginTop: 2,
+  },
+  driverRating: {
+    fontSize: 12,
+    fontFamily: "Inter_700Bold",
+    color: "#FFD700",
+  },
+  driverEta: {
+    fontSize: 12,
+    fontFamily: "Inter_400Regular",
+    color: "#666",
+  },
+  rideTypePill: {
+    backgroundColor: "rgba(255,215,0,0.1)",
+    borderRadius: 8,
+    paddingHorizontal: 10,
+    paddingVertical: 4,
+    borderWidth: 1,
+    borderColor: "rgba(255,215,0,0.3)",
+  },
+  rideTypePillText: {
+    fontSize: 11,
+    fontFamily: "Inter_700Bold",
+    color: "#FFD700",
+  },
+  foundPriceRow: {
+    flexDirection: "row",
+    alignItems: "center",
+    justifyContent: "space-between",
+    paddingTop: 10,
     borderTopWidth: 1,
+    borderTopColor: "rgba(255,215,0,0.1)",
   },
-  ctaBtn: {
+  foundPriceLabel: {
+    fontSize: 12,
+    fontFamily: "Inter_500Medium",
+    color: "#666",
+  },
+  foundPrice: {
+    fontSize: 22,
+    fontFamily: "Inter_700Bold",
+    color: "#FFD700",
+  },
+
+  ctaWrap: { marginTop: 12 },
+  ctaBtnActive: {
     flexDirection: "row",
     alignItems: "center",
     justifyContent: "center",
-    height: 56,
     gap: 10,
+    backgroundColor: "#FFD700",
+    borderRadius: 16,
+    height: 56,
+    shadowColor: "#FFD700",
+    shadowOffset: { width: 0, height: 4 },
+    shadowOpacity: 0.35,
+    shadowRadius: 12,
+    elevation: 8,
   },
-  ctaBtnText: { fontSize: 16, fontFamily: "Inter_600SemiBold" },
+  ctaBtnDisabled: {
+    flexDirection: "row",
+    alignItems: "center",
+    justifyContent: "center",
+    gap: 10,
+    backgroundColor: "#111",
+    borderRadius: 16,
+    height: 56,
+    borderWidth: 1,
+    borderColor: "rgba(255,255,255,0.06)",
+  },
+  ctaBtnText: {
+    fontSize: 15,
+    fontFamily: "Inter_700Bold",
+    color: "#000",
+    letterSpacing: 0.3,
+  },
 });
