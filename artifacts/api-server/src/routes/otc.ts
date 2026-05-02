@@ -551,6 +551,38 @@ router.get("/wallet-balance/:userId", async (req, res) => {
   res.json({ wallet_balance: (data.wallet_balance as number | null) ?? 0 });
 });
 
+// ── GET /api/otc/rides/history/:userId ────────────────────────────────────────
+router.get("/rides/history/:userId", async (req, res) => {
+  const { userId } = req.params;
+  const auth = requireAuth(req.headers.authorization);
+  if ("error" in auth) { res.status(auth.status).json({ error: auth.error }); return; }
+  if (auth.claims.sub !== userId) { res.status(403).json({ error: "Forbidden" }); return; }
+  if (!supabaseAdmin) { res.status(503).json({ error: "Supabase not configured" }); return; }
+
+  const { data, error } = await supabaseAdmin
+    .from("ride_requests")
+    .select("id, user_id, status, ride_type, pickup_address, dropoff_address, pickup_lat, pickup_lng, dropoff_lat, dropoff_lng, total_fare, payment_method, driver_name, created_at")
+    .eq("user_id", userId)
+    .order("created_at", { ascending: false })
+    .limit(100);
+
+  if (error) { res.status(500).json({ error: "Failed to fetch ride history" }); return; }
+
+  const rides = (data ?? []).map((row) => ({
+    id:               row.id               as string,
+    user_id:          row.user_id           as string,
+    status:           row.status            as string,
+    ride_type:        row.ride_type         as string,
+    pickup_address:   (row.pickup_address   as string | null) ?? "Pickup",
+    dropoff_address:  (row.dropoff_address  as string | null) ?? "Dropoff",
+    total_fare:       (row.total_fare       as number | null) ?? 0,
+    payment_method:   (row.payment_method   as string | null) ?? "cash",
+    driver_name:      (row.driver_name      as string | null) ?? null,
+    created_at:       row.created_at        as string,
+  }));
+  res.json({ rides });
+});
+
 // ── POST /api/otc/match-driver ───────────────────────────────────────────────
 // Finds nearest available driver, calculates fare, assigns to ride_request
 router.post("/match-driver", async (req, res) => {

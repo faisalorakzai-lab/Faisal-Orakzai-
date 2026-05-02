@@ -91,6 +91,10 @@ function RootLayoutNav() {
         name="services/flight-bookings"
         options={{ presentation: "card", headerShown: false, animation: "slide_from_right" }}
       />
+      <Stack.Screen
+        name="services/history"
+        options={{ presentation: "card", headerShown: false, animation: "slide_from_right" }}
+      />
     </Stack>
   );
 }
