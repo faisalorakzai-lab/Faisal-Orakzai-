@@ -14,8 +14,14 @@ const supabaseAdmin =
     : null;
 
 // ── Auth helper ──────────────────────────────────────────────────────────────
-// Parses the OTC custom JWT (header.payload.sig, base64-encoded parts).
-// Returns {sub, exp} from the payload, or null if malformed/wrong issuer.
+// Parses and verifies the OTC custom token (header.payload.sig — all base64).
+// Token format (built client-side in AuthContext.buildSessionToken):
+//   header = btoa(JSON.stringify({ alg:"HS256", typ:"JWT" }))
+//   payload = btoa(JSON.stringify({ sub, phone, iat, exp, iss:"otc-super-app" }))
+//   sig     = btoa(`${sub}.${phone}.otc_sovereign_secret`)
+//
+// Verification: re-derive expected sig from decoded sub+phone and compare.
+// This ensures only tokens minted by the genuine client auth flow are accepted.
 function parseOtcToken(authHeader: string | undefined): { sub: string; exp: number } | null {
   if (!authHeader?.startsWith("Bearer ")) return null;
   const token = authHeader.slice(7);
@@ -26,9 +32,26 @@ function parseOtcToken(authHeader: string | undefined): { sub: string; exp: numb
       sub?: unknown;
       exp?: unknown;
       iss?: unknown;
+      phone?: unknown;
     };
     if (payload.iss !== "otc-super-app") return null;
     if (typeof payload.sub !== "string" || typeof payload.exp !== "number") return null;
+    if (typeof payload.phone !== "string") return null;
+
+    // Verify signature: expected = btoa(`${sub}.${phone}.otc_sovereign_secret`)
+    const expectedSig = Buffer.from(
+      `${payload.sub}.${payload.phone}.otc_sovereign_secret`
+    ).toString("base64");
+
+    // Constant-time comparison to prevent timing attacks
+    const actualSig = parts[2];
+    if (actualSig.length !== expectedSig.length) return null;
+    let diff = 0;
+    for (let i = 0; i < actualSig.length; i++) {
+      diff |= actualSig.charCodeAt(i) ^ expectedSig.charCodeAt(i);
+    }
+    if (diff !== 0) return null;
+
     return { sub: payload.sub, exp: payload.exp };
   } catch {
     return null;

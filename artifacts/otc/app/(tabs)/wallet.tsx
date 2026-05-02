@@ -1,13 +1,12 @@
 import { Feather } from "@expo/vector-icons";
 import * as Haptics from "expo-haptics";
-import React, { useState } from "react";
+import { router } from "expo-router";
+import React from "react";
 import {
-  Alert,
   FlatList,
   Platform,
   StyleSheet,
   Text,
-  TextInput,
   TouchableOpacity,
   View,
 } from "react-native";
@@ -19,6 +18,7 @@ import { useColors } from "@/hooks/useColors";
 
 const CATEGORY_ICONS: Record<Transaction["category"], string> = {
   referral: "gift",
+  milestone: "award",
   welcome: "star",
   ride: "navigation",
   delivery: "package",
@@ -29,6 +29,7 @@ const CATEGORY_ICONS: Record<Transaction["category"], string> = {
 
 const CATEGORY_LABELS: Record<Transaction["category"], string> = {
   referral: "Referral Bonus",
+  milestone: "Milestone Reward",
   welcome: "Welcome Bonus",
   ride: "Ride",
   delivery: "Delivery",
@@ -45,26 +46,9 @@ function formatDate(ts: number): string {
 export default function WalletScreen() {
   const colors = useColors();
   const insets = useSafeAreaInsets();
-  const { balance, transactions, claimReferral } = useWallet();
-  const [referralInput, setReferralInput] = useState("");
-  const [showReferral, setShowReferral] = useState(false);
+  const { balance, transactions } = useWallet();
 
   const topPad = insets.top + (Platform.OS === "web" ? 67 : 16);
-
-  function handleClaimReferral() {
-    const code = referralInput.trim().toUpperCase();
-    if (!code) return;
-    const success = claimReferral(code);
-    if (success) {
-      Haptics.notificationAsync(Haptics.NotificationFeedbackType.Success);
-      Alert.alert("Referral Applied!", "You earned 5 OTC Coins!");
-      setReferralInput("");
-      setShowReferral(false);
-    } else {
-      Haptics.notificationAsync(Haptics.NotificationFeedbackType.Error);
-      Alert.alert("Invalid Code", "This referral code is invalid or already used.");
-    }
-  }
 
   function renderTx({ item }: { item: Transaction }) {
     const isCredit = item.type === "credit";
@@ -141,6 +125,7 @@ export default function WalletScreen() {
               </View>
             </GlassCard>
 
+            {/* Referral — directs to the dedicated Invite & Earn tab */}
             <TouchableOpacity
               style={[
                 styles.referralToggle,
@@ -151,76 +136,17 @@ export default function WalletScreen() {
                 },
               ]}
               onPress={() => {
-                setShowReferral(!showReferral);
                 Haptics.impactAsync(Haptics.ImpactFeedbackStyle.Light);
+                router.navigate("/(tabs)/invite");
               }}
               activeOpacity={0.8}
             >
               <Feather name="gift" size={18} color={colors.gold} />
               <Text style={[styles.referralToggleText, { color: colors.foreground }]}>
-                Apply Referral Code
+                Invite & Earn — Referral Codes
               </Text>
-              <Feather
-                name={showReferral ? "chevron-up" : "chevron-down"}
-                size={18}
-                color={colors.mutedForeground}
-              />
+              <Feather name="chevron-right" size={18} color={colors.mutedForeground} />
             </TouchableOpacity>
-
-            {showReferral && (
-              <GlassCard style={styles.referralBox}>
-                <Text style={[styles.referralHint, { color: colors.mutedForeground }]}>
-                  Enter your friend's referral code to earn 5 OTC Coins
-                </Text>
-                <View style={styles.referralInputRow}>
-                  <TextInput
-                    style={[
-                      styles.referralInput,
-                      {
-                        color: colors.foreground,
-                        backgroundColor: colors.input,
-                        borderColor: colors.border,
-                        borderRadius: colors.radius / 2,
-                      },
-                    ]}
-                    placeholder="OTCXXXX1234"
-                    placeholderTextColor={colors.mutedForeground}
-                    value={referralInput}
-                    onChangeText={(v) => setReferralInput(v.toUpperCase())}
-                    autoCapitalize="characters"
-                    returnKeyType="done"
-                    onSubmitEditing={handleClaimReferral}
-                  />
-                  <TouchableOpacity
-                    style={[
-                      styles.claimBtn,
-                      {
-                        backgroundColor: referralInput.trim()
-                          ? colors.gold
-                          : colors.muted,
-                        borderRadius: colors.radius / 2,
-                      },
-                    ]}
-                    onPress={handleClaimReferral}
-                    disabled={!referralInput.trim()}
-                    activeOpacity={0.8}
-                  >
-                    <Text
-                      style={[
-                        styles.claimBtnText,
-                        {
-                          color: referralInput.trim()
-                            ? colors.primaryForeground
-                            : colors.mutedForeground,
-                        },
-                      ]}
-                    >
-                      Claim
-                    </Text>
-                  </TouchableOpacity>
-                </View>
-              </GlassCard>
-            )}
 
             <Text style={[styles.sectionTitle, { color: colors.foreground }]}>
               Transactions
@@ -286,38 +212,6 @@ const styles = StyleSheet.create({
     flex: 1,
     fontSize: 15,
     fontFamily: "Inter_500Medium",
-  },
-  referralBox: {
-    padding: 16,
-    gap: 12,
-  },
-  referralHint: {
-    fontSize: 13,
-    fontFamily: "Inter_400Regular",
-    lineHeight: 18,
-  },
-  referralInputRow: {
-    flexDirection: "row",
-    gap: 10,
-  },
-  referralInput: {
-    flex: 1,
-    height: 46,
-    borderWidth: 1,
-    paddingHorizontal: 14,
-    fontSize: 15,
-    fontFamily: "Inter_500Medium",
-    letterSpacing: 1,
-  },
-  claimBtn: {
-    paddingHorizontal: 20,
-    height: 46,
-    alignItems: "center",
-    justifyContent: "center",
-  },
-  claimBtnText: {
-    fontSize: 14,
-    fontFamily: "Inter_600SemiBold",
   },
   sectionTitle: {
     fontSize: 18,

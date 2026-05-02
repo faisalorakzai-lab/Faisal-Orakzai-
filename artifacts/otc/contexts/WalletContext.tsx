@@ -180,28 +180,14 @@ export function WalletProvider({ children }: { children: React.ReactNode }) {
     [persistWallet]
   );
 
+  // claimReferral is kept for API compatibility but no longer credits coins locally.
+  // Referral rewards are granted exclusively server-side via /api/otc/referral/complete
+  // after the new user's first ride is verified in the database.
   const claimReferral = useCallback(
-    (referralCode: string): boolean => {
-      if (!referralsStorageKey) return false;
-      if (usedReferrals.includes(referralCode)) return false;
-      if (user && referralCode === user.referralCode) return false;
-
-      const updatedReferrals = [...usedReferrals, referralCode];
-      setUsedReferrals(updatedReferrals);
-      AsyncStorage.setItem(
-        referralsStorageKey,
-        JSON.stringify(updatedReferrals)
-      ).catch(() => {});
-
-      addTransaction({
-        type: "credit",
-        amount: 5,
-        description: "Referral bonus applied",
-        category: "referral",
-      });
-      return true;
+    (_referralCode: string): boolean => {
+      return false;
     },
-    [usedReferrals, user, addTransaction, referralsStorageKey]
+    []
   );
 
   return (
