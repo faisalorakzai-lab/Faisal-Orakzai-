@@ -24,6 +24,7 @@ import {
 } from "@/components/ride/OtcRideTypeSelector";
 import { PlacesSearch, type PlaceResult } from "@/components/ride/PlacesSearch";
 import { RideMapFull, type MapCoord } from "@/components/ride/RideMapFull";
+import { DriverFoundCard, type DriverInfo } from "@/components/ride/DriverFoundCard";
 import { useAuth } from "@/contexts/AuthContext";
 import { useLocation } from "@/contexts/LocationContext";
 import { useRide, type RideClass } from "@/contexts/RideContext";
@@ -32,18 +33,9 @@ import { useColors } from "@/hooks/useColors";
 
 const { height: SCREEN_H } = Dimensions.get("window");
 
-const DRIVERS = [
-  { name: "Tariq Mehmood", rating: 4.9, eta: 4 },
-  { name: "Asad Ali Khan", rating: 4.8, eta: 6 },
-  { name: "Samiullah Baig", rating: 5.0, eta: 3 },
-  { name: "Fawad Iqbal", rating: 4.7, eta: 7 },
-];
-
 function calcDistance(
-  lat1: number,
-  lng1: number,
-  lat2: number,
-  lng2: number
+  lat1: number, lng1: number,
+  lat2: number, lng2: number
 ): number {
   const R = 6371;
   const dLat = ((lat2 - lat1) * Math.PI) / 180;
@@ -56,6 +48,15 @@ function calcDistance(
   return parseFloat(
     (R * 2 * Math.atan2(Math.sqrt(a), Math.sqrt(1 - a))).toFixed(1)
   );
+}
+
+// Resolve the API base URL for both web and native environments
+function getApiUrl(path: string): string {
+  if (typeof window !== "undefined" && window.location?.origin) {
+    return `${window.location.origin}${path}`;
+  }
+  const domain = process.env["EXPO_PUBLIC_DOMAIN"] ?? "";
+  return domain ? `https://${domain}${path}` : path;
 }
 
 type Phase = "input" | "ready" | "searching" | "found";
@@ -75,12 +76,17 @@ export default function OtcRideScreen() {
   const [suggestedPrice, setSuggestedPrice] = useState(0);
   const [offeredPrice, setOfferedPrice] = useState("");
   const [isEditingPrice, setIsEditingPrice] = useState(false);
-  const [driver, setDriver] = useState(DRIVERS[0]);
+  const [driverInfo, setDriverInfo] = useState<DriverInfo | null>(null);
   const [rideId, setRideId] = useState<string | null>(null);
 
   const searchAnim = useRef(new Animated.Value(0)).current;
+  const searchLoopRef = useRef<Animated.CompositeAnimation | null>(null);
+  const realtimeChannelRef = useRef<ReturnType<NonNullable<typeof supabase>["channel"]> | null>(null);
+  const handledRef = useRef(false);
+
   const topPad = insets.top + (Platform.OS === "web" ? 67 : 16);
 
+  // Auto-fill pickup from GPS
   useEffect(() => {
     if (coordinates) {
       setPickup({
@@ -92,6 +98,16 @@ export default function OtcRideScreen() {
       setPickup({ lat: 24.8607, lng: 67.0011, name: "Karachi, Pakistan" });
     }
   }, [coordinates, city, district]);
+
+  // Cleanup Realtime subscription on unmount
+  useEffect(() => {
+    return () => {
+      if (realtimeChannelRef.current && supabase) {
+        supabase.removeChannel(realtimeChannelRef.current);
+        realtimeChannelRef.current = null;
+      }
+    };
+  }, []);
 
   const distanceKm =
     pickup && dropoff
@@ -122,39 +138,7 @@ export default function OtcRideScreen() {
     recalcPrice(type, distanceKm);
   }
 
-  async function handleConfirm() {
-    if (!pickup || !dropoff) return;
-    Haptics.impactAsync(Haptics.ImpactFeedbackStyle.Heavy);
-
-    const id = `OTC-${Date.now()}-${Math.random()
-      .toString(36)
-      .slice(2, 7)
-      .toUpperCase()}`;
-    setRideId(id);
-    setPhase("searching");
-
-    if (supabase) {
-      supabase
-        .from("ride_requests")
-        .insert({
-          id,
-          user_id: authUser?.id ?? null,
-          pickup_name: pickup.name ?? "Unknown",
-          pickup_lat: pickup.lat,
-          pickup_lng: pickup.lng,
-          dropoff_name: dropoff.name ?? "Unknown",
-          dropoff_lat: dropoff.lat,
-          dropoff_lng: dropoff.lng,
-          ride_type: rideType.id,
-          ride_type_label: rideType.label,
-          distance_km: distanceKm,
-          suggested_price: suggestedPrice,
-          offered_price: parseInt(offeredPrice, 10) || 0,
-          status: "searching",
-        })
-        .then(() => {});
-    }
-
+  function startSearchAnimation() {
     const loop = Animated.loop(
       Animated.sequence([
         Animated.timing(searchAnim, {
@@ -169,15 +153,211 @@ export default function OtcRideScreen() {
         }),
       ])
     );
+    searchLoopRef.current = loop;
     loop.start();
+  }
 
+  function stopSearchAnimation() {
+    searchLoopRef.current?.stop();
+    searchLoopRef.current = null;
+    searchAnim.setValue(0);
+  }
+
+  function handleDriverAssigned(data: {
+    driver?: {
+      id: string;
+      name: string;
+      phone: string | null;
+      vehicle_model: string | null;
+      plate_number: string | null;
+      rating: number;
+      eta: number;
+    };
+    total_fare?: number;
+    // Supabase Realtime row shape
+    driver_id?: string;
+    driver_name?: string;
+    driver_phone?: string | null;
+    driver_vehicle_model?: string | null;
+    driver_plate?: string | null;
+    driver_rating?: number;
+    driver_eta?: number;
+    total_fare_row?: number;
+  }) {
+    if (handledRef.current) return;
+    handledRef.current = true;
+
+    stopSearchAnimation();
+
+    // Normalise between API response shape and Realtime row shape
+    const info: DriverInfo = {
+      id: data.driver?.id ?? data.driver_id ?? "unknown",
+      name: data.driver?.name ?? data.driver_name ?? "OTC Partner",
+      phone: data.driver?.phone ?? data.driver_phone ?? null,
+      vehicleModel: data.driver?.vehicle_model ?? data.driver_vehicle_model ?? null,
+      plate: data.driver?.plate_number ?? data.driver_plate ?? null,
+      rating: data.driver?.rating ?? data.driver_rating ?? 4.8,
+      eta: data.driver?.eta ?? data.driver_eta ?? 5,
+      totalFare: data.total_fare ?? data.total_fare_row ?? (parseInt(offeredPrice, 10) || 0),
+      rideTypeLabel: rideType.label,
+    };
+
+    setDriverInfo(info);
+    setPhase("found");
+    Haptics.notificationAsync(Haptics.NotificationFeedbackType.Success);
+  }
+
+  async function handleConfirm() {
+    if (!pickup || !dropoff) return;
+    Haptics.impactAsync(Haptics.ImpactFeedbackStyle.Heavy);
+
+    const id = `OTC-${Date.now()}-${Math.random()
+      .toString(36)
+      .slice(2, 7)
+      .toUpperCase()}`;
+    setRideId(id);
+    setPhase("searching");
+    handledRef.current = false;
+    startSearchAnimation();
+
+    // ── Supabase path ────────────────────────────────────────────────
+    if (supabase) {
+      // 1. Insert ride_request
+      await supabase.from("ride_requests").insert({
+        id,
+        user_id: authUser?.id ?? null,
+        pickup_name: pickup.name ?? "Unknown",
+        pickup_lat: pickup.lat,
+        pickup_lng: pickup.lng,
+        dropoff_name: dropoff.name ?? "Unknown",
+        dropoff_lat: dropoff.lat,
+        dropoff_lng: dropoff.lng,
+        ride_type: rideType.id,
+        ride_type_label: rideType.label,
+        distance_km: distanceKm,
+        suggested_price: suggestedPrice,
+        offered_price: parseInt(offeredPrice, 10) || 0,
+        status: "searching",
+      });
+
+      // 2. Subscribe to Realtime for driver assignment
+      const channel = supabase
+        .channel(`ride-assign-${id}`)
+        .on(
+          "postgres_changes",
+          {
+            event: "UPDATE",
+            schema: "public",
+            table: "ride_requests",
+            filter: `id=eq.${id}`,
+          },
+          (payload) => {
+            const row = payload.new as Record<string, unknown>;
+            if (row["status"] === "assigned") {
+              handleDriverAssigned({
+                driver_id: row["driver_id"] as string,
+                driver_name: row["driver_name"] as string,
+                driver_phone: (row["driver_phone"] as string | null) ?? null,
+                driver_vehicle_model:
+                  (row["driver_vehicle_model"] as string | null) ?? null,
+                driver_plate: (row["driver_plate"] as string | null) ?? null,
+                driver_rating: (row["driver_rating"] as number) ?? 4.8,
+                driver_eta: (row["driver_eta"] as number) ?? 5,
+                total_fare: (row["total_fare"] as number) ?? 0,
+              });
+            } else if (row["status"] === "no_drivers") {
+              handleNoDrivers();
+            }
+          }
+        )
+        .subscribe();
+
+      realtimeChannelRef.current = channel;
+
+      // 3. Call match-driver API — this triggers the Supabase UPDATE
+      try {
+        const resp = await fetch(getApiUrl("/api/otc/match-driver"), {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({
+            ride_request_id: id,
+            pickup_lat: pickup.lat,
+            pickup_lng: pickup.lng,
+            ride_type: rideType.id,
+            distance_km: distanceKm,
+          }),
+        });
+
+        const json = (await resp.json()) as {
+          status: string;
+          driver?: {
+            id: string;
+            name: string;
+            phone: string | null;
+            vehicle_model: string | null;
+            plate_number: string | null;
+            rating: number;
+            eta: number;
+          };
+          total_fare?: number;
+        };
+
+        // API response may arrive before or after Realtime — handle once
+        if (json.status === "assigned") {
+          handleDriverAssigned(json);
+        } else if (json.status === "no_drivers") {
+          handleNoDrivers();
+        }
+      } catch {
+        // Network error — fallback to simulation after short delay
+        simulateFallback();
+      }
+    } else {
+      // No Supabase credentials — demo simulation
+      simulateFallback();
+    }
+  }
+
+  function handleNoDrivers() {
+    if (handledRef.current) return;
+    handledRef.current = true;
+    stopSearchAnimation();
+    // Stay in searching phase, show a brief message, then reset
+    setTimeout(() => resetRide(), 3000);
+  }
+
+  function simulateFallback() {
     setTimeout(() => {
-      loop.stop();
-      searchAnim.setValue(0);
-      setDriver(DRIVERS[Math.floor(Math.random() * DRIVERS.length)]);
-      setPhase("found");
-      Haptics.notificationAsync(Haptics.NotificationFeedbackType.Success);
+      if (handledRef.current) return;
+      handleDriverAssigned({
+        driver: {
+          id: "demo",
+          name: "Tariq Mehmood",
+          phone: "+923001234567",
+          vehicle_model: "Honda CB150F",
+          plate_number: "KHA-2023",
+          rating: 4.9,
+          eta: 4,
+        },
+        total_fare: parseInt(offeredPrice, 10) || suggestedPrice,
+      });
     }, 2600);
+  }
+
+  async function handleCancelRide() {
+    Haptics.impactAsync(Haptics.ImpactFeedbackStyle.Medium);
+    if (supabase && rideId) {
+      supabase
+        .from("ride_requests")
+        .update({ status: "cancelled" })
+        .eq("id", rideId)
+        .then(() => {});
+    }
+    if (realtimeChannelRef.current && supabase) {
+      supabase.removeChannel(realtimeChannelRef.current);
+      realtimeChannelRef.current = null;
+    }
+    resetRide();
   }
 
   function handleStartRide() {
@@ -186,13 +366,19 @@ export default function OtcRideScreen() {
   }
 
   function resetRide() {
+    stopSearchAnimation();
+    if (realtimeChannelRef.current && supabase) {
+      supabase.removeChannel(realtimeChannelRef.current);
+      realtimeChannelRef.current = null;
+    }
     setPhase("input");
     setDropoff(null);
     setDropoffFocused(false);
     setOfferedPrice("");
     setSuggestedPrice(0);
     setRideId(null);
-    searchAnim.setValue(0);
+    setDriverInfo(null);
+    handledRef.current = false;
   }
 
   const offeredNum = parseInt(offeredPrice, 10) || 0;
@@ -200,10 +386,11 @@ export default function OtcRideScreen() {
 
   return (
     <View style={styles.root}>
-      {/* ── Full-screen map background ── */}
+      {/* ── Full-screen map ── */}
       <RideMapFull
         pickup={pickup}
         dropoff={dropoff}
+        searching={phase === "searching"}
         style={StyleSheet.absoluteFill}
       />
 
@@ -242,14 +429,13 @@ export default function OtcRideScreen() {
       <KeyboardAvoidingView
         behavior={Platform.OS === "ios" ? "padding" : "height"}
         style={styles.kavWrapper}
-        keyboardVerticalOffset={Platform.OS === "ios" ? 0 : 0}
+        keyboardVerticalOffset={0}
       >
         <View
           style={[
             styles.bottomPanel,
             {
-              paddingBottom:
-                insets.bottom + (Platform.OS === "web" ? 24 : 12),
+              paddingBottom: insets.bottom + (Platform.OS === "web" ? 24 : 12),
               maxHeight: SCREEN_H * 0.72,
             },
           ]}
@@ -264,7 +450,6 @@ export default function OtcRideScreen() {
             {/* ── Input Card ── */}
             {(phase === "input" || phase === "ready") && (
               <View style={styles.inputCard}>
-                {/* Pickup */}
                 <PlacesSearch
                   label="PICKUP"
                   placeholder="Detecting location…"
@@ -281,7 +466,6 @@ export default function OtcRideScreen() {
 
                 <View style={styles.inputDivider} />
 
-                {/* Dropoff */}
                 {dropoffFocused ? (
                   <PlacesSearch
                     label="DESTINATION"
@@ -309,7 +493,7 @@ export default function OtcRideScreen() {
             )}
 
             {/* ── Ride Type Selector ── */}
-            {(phase === "ready" || phase === "found") && (
+            {phase === "ready" && (
               <>
                 <View style={styles.sectionHeader}>
                   <Text style={styles.sectionTitle}>Choose Ride</Text>
@@ -327,14 +511,12 @@ export default function OtcRideScreen() {
                   distanceKm={distanceKm}
                 />
 
-                {/* ── Price Negotiation Card ── */}
+                {/* ── Price Negotiation ── */}
                 {suggestedPrice > 0 && (
                   <View style={styles.priceCard}>
                     <View style={styles.priceRow}>
                       <View style={styles.priceSide}>
-                        <Text style={styles.priceLabelSmall}>
-                          SUGGESTED
-                        </Text>
+                        <Text style={styles.priceLabelSmall}>SUGGESTED</Text>
                         <Text style={styles.suggestedAmt}>
                           PKR {suggestedPrice.toLocaleString()}
                         </Text>
@@ -343,9 +525,7 @@ export default function OtcRideScreen() {
                       <View style={styles.priceVDivider} />
 
                       <View style={styles.priceSide}>
-                        <Text style={styles.priceLabelSmall}>
-                          YOUR OFFER
-                        </Text>
+                        <Text style={styles.priceLabelSmall}>YOUR OFFER</Text>
                         {isEditingPrice ? (
                           <TextInput
                             style={styles.priceInput}
@@ -371,11 +551,7 @@ export default function OtcRideScreen() {
                             <Text style={styles.offeredAmt}>
                               PKR {offeredNum.toLocaleString()}
                             </Text>
-                            <Feather
-                              name="edit-2"
-                              size={12}
-                              color="#FFD700"
-                            />
+                            <Feather name="edit-2" size={12} color="#FFD700" />
                           </TouchableOpacity>
                         )}
                       </View>
@@ -384,19 +560,14 @@ export default function OtcRideScreen() {
                     {priceDiff !== 0 && (
                       <View style={styles.diffRow}>
                         <Feather
-                          name={
-                            priceDiff < 0 ? "trending-down" : "trending-up"
-                          }
+                          name={priceDiff < 0 ? "trending-down" : "trending-up"}
                           size={12}
                           color={priceDiff < 0 ? "#34D399" : "#F87171"}
                         />
                         <Text
                           style={[
                             styles.diffText,
-                            {
-                              color:
-                                priceDiff < 0 ? "#34D399" : "#F87171",
-                            },
+                            { color: priceDiff < 0 ? "#34D399" : "#F87171" },
                           ]}
                         >
                           {priceDiff < 0
@@ -455,57 +626,19 @@ export default function OtcRideScreen() {
             )}
 
             {/* ── Driver Found ── */}
-            {phase === "found" && (
-              <View style={styles.foundCard}>
-                <View style={styles.foundBadgeRow}>
-                  <Feather name="check-circle" size={14} color="#22C55E" />
-                  <Text style={styles.foundBadgeText}>Driver Matched</Text>
-                </View>
-                <View style={styles.driverRow}>
-                  <View style={styles.driverAvatar}>
-                    <Text style={styles.driverInitial}>
-                      {driver.name.charAt(0)}
-                    </Text>
-                  </View>
-                  <View style={{ flex: 1 }}>
-                    <Text style={styles.driverName}>{driver.name}</Text>
-                    <View style={styles.driverMeta}>
-                      <Feather name="star" size={11} color="#FFD700" />
-                      <Text style={styles.driverRating}>{driver.rating}</Text>
-                      <Text style={styles.driverEta}>
-                        · {driver.eta} min away
-                      </Text>
-                    </View>
-                  </View>
-                  <View style={styles.rideTypePill}>
-                    <Text style={styles.rideTypePillText}>
-                      {rideType.label}
-                    </Text>
-                  </View>
-                </View>
-                <View style={styles.foundPriceRow}>
-                  <Text style={styles.foundPriceLabel}>Agreed Price</Text>
-                  <Text style={styles.foundPrice}>
-                    PKR {offeredNum.toLocaleString()}
-                  </Text>
-                </View>
-              </View>
+            {phase === "found" && driverInfo && (
+              <DriverFoundCard
+                driver={driverInfo}
+                onCancel={handleCancelRide}
+                onStartRide={handleStartRide}
+              />
             )}
           </ScrollView>
 
-          {/* ── CTA Button ── */}
-          {phase !== "searching" && (
+          {/* ── CTA Button (ready phase only — found phase uses card buttons) ── */}
+          {(phase === "input" || phase === "ready") && (
             <View style={styles.ctaWrap}>
-              {phase === "found" ? (
-                <TouchableOpacity
-                  style={styles.ctaBtnActive}
-                  onPress={handleStartRide}
-                  activeOpacity={0.85}
-                >
-                  <Feather name="play" size={18} color="#000" />
-                  <Text style={styles.ctaBtnText}>Activate Ride Mode</Text>
-                </TouchableOpacity>
-              ) : phase === "ready" && dropoff ? (
+              {phase === "ready" && dropoff ? (
                 <TouchableOpacity
                   style={styles.ctaBtnActive}
                   onPress={handleConfirm}
@@ -656,11 +789,7 @@ const styles = StyleSheet.create({
     padding: 16,
     gap: 10,
   },
-  priceRow: {
-    flexDirection: "row",
-    alignItems: "center",
-    gap: 0,
-  },
+  priceRow: { flexDirection: "row", alignItems: "center" },
   priceSide: { flex: 1, gap: 4 },
   priceLabelSmall: {
     fontSize: 9,
@@ -693,17 +822,9 @@ const styles = StyleSheet.create({
     margin: 0,
     minWidth: 80,
   },
-  diffRow: {
-    flexDirection: "row",
-    alignItems: "center",
-    gap: 6,
-  },
+  diffRow: { flexDirection: "row", alignItems: "center", gap: 6 },
   diffText: { fontSize: 12, fontFamily: "Inter_500Medium" },
-  priceHintRow: {
-    flexDirection: "row",
-    alignItems: "center",
-    gap: 5,
-  },
+  priceHintRow: { flexDirection: "row", alignItems: "center", gap: 5 },
   priceHintText: {
     fontSize: 10,
     fontFamily: "Inter_400Regular",
@@ -748,98 +869,6 @@ const styles = StyleSheet.create({
     color: "#555",
     letterSpacing: 0.5,
     marginTop: 4,
-  },
-
-  foundCard: {
-    backgroundColor: "#111",
-    borderRadius: 16,
-    borderWidth: 1,
-    borderColor: "rgba(34,197,94,0.25)",
-    padding: 16,
-    gap: 14,
-  },
-  foundBadgeRow: {
-    flexDirection: "row",
-    alignItems: "center",
-    gap: 6,
-  },
-  foundBadgeText: {
-    fontSize: 12,
-    fontFamily: "Inter_700Bold",
-    color: "#22C55E",
-    letterSpacing: 0.5,
-  },
-  driverRow: {
-    flexDirection: "row",
-    alignItems: "center",
-    gap: 12,
-  },
-  driverAvatar: {
-    width: 44,
-    height: 44,
-    borderRadius: 22,
-    backgroundColor: "rgba(255,215,0,0.12)",
-    borderWidth: 1.5,
-    borderColor: "#FFD700",
-    alignItems: "center",
-    justifyContent: "center",
-  },
-  driverInitial: {
-    fontSize: 18,
-    fontFamily: "Inter_700Bold",
-    color: "#FFD700",
-  },
-  driverName: {
-    fontSize: 15,
-    fontFamily: "Inter_700Bold",
-    color: "#fff",
-  },
-  driverMeta: {
-    flexDirection: "row",
-    alignItems: "center",
-    gap: 4,
-    marginTop: 2,
-  },
-  driverRating: {
-    fontSize: 12,
-    fontFamily: "Inter_700Bold",
-    color: "#FFD700",
-  },
-  driverEta: {
-    fontSize: 12,
-    fontFamily: "Inter_400Regular",
-    color: "#666",
-  },
-  rideTypePill: {
-    backgroundColor: "rgba(255,215,0,0.1)",
-    borderRadius: 8,
-    paddingHorizontal: 10,
-    paddingVertical: 4,
-    borderWidth: 1,
-    borderColor: "rgba(255,215,0,0.3)",
-  },
-  rideTypePillText: {
-    fontSize: 11,
-    fontFamily: "Inter_700Bold",
-    color: "#FFD700",
-  },
-  foundPriceRow: {
-    flexDirection: "row",
-    alignItems: "center",
-    justifyContent: "space-between",
-    paddingTop: 10,
-    borderTopWidth: 1,
-    borderTopColor: "rgba(255,215,0,0.1)",
-  },
-  foundPriceLabel: {
-    fontSize: 12,
-    fontFamily: "Inter_500Medium",
-    color: "#666",
-  },
-  foundPrice: {
-    fontSize: 22,
-    fontFamily: "Inter_700Bold",
-    color: "#FFD700",
   },
 
   ctaWrap: { marginTop: 12 },

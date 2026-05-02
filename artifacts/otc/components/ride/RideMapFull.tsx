@@ -3,6 +3,7 @@ import React, { useEffect, useRef, useState } from "react";
 import {
   Animated,
   Dimensions,
+  Easing,
   StyleSheet,
   Text,
   View,
@@ -23,6 +24,7 @@ export interface MapCoord {
 interface RideMapFullProps {
   pickup?: MapCoord | null;
   dropoff?: MapCoord | null;
+  searching?: boolean;
   style?: object;
 }
 
@@ -69,7 +71,96 @@ function buildMapUrl(
   return `${base}/67.0011,24.8607,11,0/${pw}x${ph}@2x${qs}`;
 }
 
-export function RideMapFull({ pickup, dropoff, style }: RideMapFullProps) {
+// Three concentric pulse rings around the pickup location
+function PulseRings() {
+  const ring1 = useRef(new Animated.Value(0)).current;
+  const ring2 = useRef(new Animated.Value(0)).current;
+  const ring3 = useRef(new Animated.Value(0)).current;
+
+  useEffect(() => {
+    function makeLoop(anim: Animated.Value, delay: number) {
+      return Animated.loop(
+        Animated.sequence([
+          Animated.delay(delay),
+          Animated.timing(anim, {
+            toValue: 1,
+            duration: 1800,
+            easing: Easing.out(Easing.ease),
+            useNativeDriver: true,
+          }),
+          Animated.timing(anim, {
+            toValue: 0,
+            duration: 0,
+            useNativeDriver: true,
+          }),
+        ])
+      );
+    }
+
+    const l1 = makeLoop(ring1, 0);
+    const l2 = makeLoop(ring2, 500);
+    const l3 = makeLoop(ring3, 1000);
+    l1.start();
+    l2.start();
+    l3.start();
+
+    return () => {
+      l1.stop();
+      l2.stop();
+      l3.stop();
+    };
+  }, [ring1, ring2, ring3]);
+
+  const rings = [
+    { anim: ring1, maxSize: 100 },
+    { anim: ring2, maxSize: 160 },
+    { anim: ring3, maxSize: 220 },
+  ];
+
+  return (
+    <View style={StyleSheet.absoluteFill} pointerEvents="none">
+      {rings.map(({ anim, maxSize }, i) => {
+        const size = anim.interpolate({
+          inputRange: [0, 1],
+          outputRange: [32, maxSize],
+        });
+        const opacity = anim.interpolate({
+          inputRange: [0, 0.3, 1],
+          outputRange: [0, 0.55, 0],
+        });
+        return (
+          <Animated.View
+            key={i}
+            style={[
+              styles.ring,
+              {
+                opacity,
+                width: size,
+                height: size,
+                borderRadius: Animated.divide(size, 2) as unknown as number,
+              },
+            ]}
+          />
+        );
+      })}
+
+      {/* Gold centre dot */}
+      <View style={styles.centreDot} />
+
+      {/* Label */}
+      <View style={styles.searchLabel}>
+        <Text style={styles.searchLabelText}>Finding your OTC Partner…</Text>
+      </View>
+    </View>
+  );
+}
+
+export function RideMapFull({
+  pickup,
+  dropoff,
+  searching = false,
+  style,
+}: RideMapFullProps) {
   const mapW = SCREEN_W;
   const [mapUrl, setMapUrl] = useState<string | null>(null);
   const fadeAnim = useRef(new Animated.Value(0)).current;
@@ -78,13 +169,7 @@ export function RideMapFull({ pickup, dropoff, style }: RideMapFullProps) {
     const url = buildMapUrl(pickup, dropoff, mapW, MAP_H);
     fadeAnim.setValue(0);
     setMapUrl(url);
-  }, [
-    pickup?.lat,
-    pickup?.lng,
-    dropoff?.lat,
-    dropoff?.lng,
-    mapW,
-  ]);
+  }, [pickup?.lat, pickup?.lng, dropoff?.lat, dropoff?.lng, mapW]);
 
   function onLoad() {
     Animated.timing(fadeAnim, {
@@ -110,13 +195,19 @@ export function RideMapFull({ pickup, dropoff, style }: RideMapFullProps) {
           {Array.from({ length: 10 }).map((_, i) => (
             <View
               key={`h${i}`}
-              style={[styles.gridLine, { top: (i / 10) * MAP_H, left: 0, right: 0, height: 1 }]}
+              style={[
+                styles.gridLine,
+                { top: (i / 10) * MAP_H, left: 0, right: 0, height: 1 },
+              ]}
             />
           ))}
           {Array.from({ length: 14 }).map((_, i) => (
             <View
               key={`v${i}`}
-              style={[styles.gridLine, { left: (i / 14) * mapW, top: 0, bottom: 0, width: 1 }]}
+              style={[
+                styles.gridLine,
+                { left: (i / 14) * mapW, top: 0, bottom: 0, width: 1 },
+              ]}
             />
           ))}
         </View>
@@ -125,27 +216,32 @@ export function RideMapFull({ pickup, dropoff, style }: RideMapFullProps) {
       <View style={styles.gradientTop} />
       <View style={styles.gradientBottom} />
 
-      {pickup && (
-        <View style={[styles.pinBadge, styles.pinTop]}>
-          <View style={[styles.pinDot, { backgroundColor: "#FFD700" }]} />
-          <Text style={styles.pinText} numberOfLines={1}>
-            {pickup.name ?? "Pickup"}
-          </Text>
-        </View>
+      {/* Searching pulse rings — shown instead of normal pins */}
+      {searching ? (
+        <PulseRings />
+      ) : (
+        <>
+          {pickup && (
+            <View style={[styles.pinBadge, styles.pinTop]}>
+              <View style={[styles.pinDot, { backgroundColor: "#FFD700" }]} />
+              <Text style={styles.pinText} numberOfLines={1}>
+                {pickup.name ?? "Pickup"}
+              </Text>
+            </View>
+          )}
+
+          {dropoff && (
+            <View style={[styles.pinBadge, styles.pinBottom]}>
+              <View style={[styles.pinDot, { backgroundColor: "#22C55E" }]} />
+              <Text style={styles.pinText} numberOfLines={1}>
+                {dropoff.name ?? "Destination"}
+              </Text>
+            </View>
+          )}
+        </>
       )}
 
-      {dropoff && (
-        <View style={[styles.pinBadge, styles.pinBottom]}>
-          <View style={[styles.pinDot, { backgroundColor: "#22C55E" }]} />
-          <Text style={styles.pinText} numberOfLines={1}>
-            {dropoff.name ?? "Destination"}
-          </Text>
-        </View>
-      )}
-
-      {mapUrl && (
-        <Text style={styles.attr}>© Mapbox © OSM</Text>
-      )}
+      {mapUrl && <Text style={styles.attr}>© Mapbox © OSM</Text>}
     </View>
   );
 }
@@ -182,6 +278,50 @@ const styles = StyleSheet.create({
     height: 90,
     backgroundColor: "rgba(0,0,0,0.55)",
   },
+
+  // Pulse rings
+  ring: {
+    position: "absolute",
+    alignSelf: "center",
+    top: "50%",
+    marginTop: -11,
+    borderWidth: 2,
+    borderColor: "#FFD700",
+    backgroundColor: "transparent",
+  },
+  centreDot: {
+    position: "absolute",
+    alignSelf: "center",
+    top: "50%",
+    marginTop: -7,
+    width: 14,
+    height: 14,
+    borderRadius: 7,
+    backgroundColor: "#FFD700",
+    shadowColor: "#FFD700",
+    shadowOffset: { width: 0, height: 0 },
+    shadowOpacity: 0.9,
+    shadowRadius: 8,
+    elevation: 6,
+  },
+  searchLabel: {
+    position: "absolute",
+    alignSelf: "center",
+    bottom: 28,
+    backgroundColor: "rgba(0,0,0,0.75)",
+    borderRadius: 20,
+    paddingHorizontal: 16,
+    paddingVertical: 7,
+    borderWidth: 1,
+    borderColor: "rgba(255,215,0,0.3)",
+  },
+  searchLabelText: {
+    fontSize: 12,
+    fontFamily: "Inter_500Medium",
+    color: "#FFD700",
+    letterSpacing: 0.4,
+  },
+
   pinBadge: {
     position: "absolute",
     left: 16,
