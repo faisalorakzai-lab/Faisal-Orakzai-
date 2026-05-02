@@ -103,6 +103,10 @@ function RootLayoutNav() {
         name="services/settings"
         options={{ presentation: "card", headerShown: false, animation: "slide_from_right" }}
       />
+      <Stack.Screen
+        name="driver"
+        options={{ presentation: "card", headerShown: false, animation: "slide_from_right" }}
+      />
     </Stack>
   );
 }
