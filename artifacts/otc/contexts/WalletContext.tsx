@@ -18,6 +18,7 @@ export interface Transaction {
   timestamp: number;
   category:
     | "referral"
+    | "milestone"
     | "welcome"
     | "ride"
     | "delivery"

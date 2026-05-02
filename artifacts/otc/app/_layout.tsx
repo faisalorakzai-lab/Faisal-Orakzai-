@@ -18,6 +18,7 @@ import { ErrorBoundary } from "@/components/ErrorBoundary";
 import { AuthProvider, useAuth } from "@/contexts/AuthContext";
 import { CharacterProvider } from "@/contexts/CharacterContext";
 import { LocationProvider } from "@/contexts/LocationContext";
+import { ReferralProvider } from "@/contexts/ReferralContext";
 import { RideProvider } from "@/contexts/RideContext";
 import { WalletProvider } from "@/contexts/WalletContext";
 
@@ -111,13 +112,15 @@ export default function RootLayout() {
               <AuthProvider>
                 <LocationProvider>
                   <WalletProvider>
-                    <CharacterProvider>
-                      <RideProvider>
-                        <AuthGate>
-                          <RootLayoutNav />
-                        </AuthGate>
-                      </RideProvider>
-                    </CharacterProvider>
+                    <ReferralProvider>
+                      <CharacterProvider>
+                        <RideProvider>
+                          <AuthGate>
+                            <RootLayoutNav />
+                          </AuthGate>
+                        </RideProvider>
+                      </CharacterProvider>
+                    </ReferralProvider>
                   </WalletProvider>
                 </LocationProvider>
               </AuthProvider>

@@ -131,9 +131,251 @@ async function settleRide(
   }
 }
 
+// ── Referral helpers ─────────────────────────────────────────────────────────
+
+const REFERRAL_NEW_USER_COINS  = 10;   // coins credited to the new user
+const REFERRAL_REFERRER_COINS  = 5;    // coins credited to the referrer
+const MILESTONE_TARGET         = 10;   // successful referrals needed
+const MILESTONE_PKR            = 10000; // PKR credited on milestone ($100 equiv)
+const MAX_DEVICES_PER_REFERRAL = 3;    // anti-spam: one device can claim at most 3 referrals
+
+async function creditOtcCoins(
+  admin: NonNullable<typeof supabaseAdmin>,
+  userId: string,
+  amount: number,
+  description: string
+): Promise<void> {
+  // Update otc_wallet_data balance
+  const { data: wd } = await admin
+    .from("otc_wallet_data")
+    .select("balance, transactions")
+    .eq("user_id", userId)
+    .maybeSingle();
+
+  const currentBalance  = (wd?.balance as number | null) ?? 0;
+  const existingTxs     = Array.isArray(wd?.transactions) ? (wd?.transactions as unknown[]) : [];
+  const newTx = {
+    id:          Date.now().toString() + Math.random().toString(36).substring(2, 7),
+    type:        "credit",
+    amount,
+    description,
+    timestamp:   Date.now(),
+    category:    "referral",
+  };
+  await admin.from("otc_wallet_data").upsert({
+    user_id:     userId,
+    balance:     currentBalance + amount,
+    transactions: [newTx, ...existingTxs],
+    updated_at:  new Date().toISOString(),
+  });
+}
+
 // ── GET /api/otc/health ──────────────────────────────────────────────────────
 router.get("/health", (_req, res) => {
   res.json({ supabase: supabaseAdmin !== null });
+});
+
+// ── GET /api/otc/referral/stats/:userId ──────────────────────────────────────
+router.get("/referral/stats/:userId", async (req, res) => {
+  const { userId } = req.params;
+  const claims = parseOtcToken(req.headers.authorization);
+  if (!claims || claims.sub !== userId) {
+    res.status(401).json({ error: "Unauthorized" });
+    return;
+  }
+  if (!supabaseAdmin) { res.status(503).json({ error: "Supabase not configured" }); return; }
+
+  const { data } = await supabaseAdmin
+    .from("profiles")
+    .select("referral_code, successful_referrals, milestone_claimed, referred_by")
+    .eq("user_id", userId)
+    .maybeSingle();
+
+  res.json({
+    referral_code:         (data?.referral_code         as string  | null) ?? null,
+    successful_referrals:  (data?.successful_referrals  as number  | null) ?? 0,
+    milestone_claimed:     (data?.milestone_claimed      as boolean | null) ?? false,
+    referred_by:           (data?.referred_by            as string  | null) ?? null,
+  });
+});
+
+// ── POST /api/otc/referral/apply ──────────────────────────────────────────────
+// Called when a new user enters a referral code during profile setup.
+router.post("/referral/apply", async (req, res) => {
+  const claims = parseOtcToken(req.headers.authorization);
+  if (!claims) { res.status(401).json({ error: "Unauthorized" }); return; }
+  if (Math.floor(Date.now() / 1000) > claims.exp) {
+    res.status(401).json({ error: "Token expired" }); return;
+  }
+  if (!supabaseAdmin) { res.status(503).json({ error: "Supabase not configured" }); return; }
+
+  const { referral_code, device_id } = req.body as {
+    referral_code?: string;
+    device_id?: string;
+  };
+
+  if (!referral_code?.trim()) {
+    res.status(400).json({ error: "referral_code is required" }); return;
+  }
+
+  const userId = claims.sub;
+  const code   = referral_code.trim().toUpperCase();
+
+  // Prevent self-referral
+  const { data: self } = await supabaseAdmin
+    .from("profiles")
+    .select("referral_code, referred_by")
+    .eq("user_id", userId)
+    .maybeSingle();
+
+  if (self?.referral_code === code) {
+    res.status(400).json({ error: "You cannot use your own referral code" }); return;
+  }
+  if (self?.referred_by) {
+    res.status(400).json({ error: "You have already used a referral code" }); return;
+  }
+
+  // Device anti-spam check
+  if (device_id) {
+    const { count } = await supabaseAdmin
+      .from("device_registry")
+      .select("*", { count: "exact", head: true })
+      .eq("device_id", device_id) as { count: number | null };
+
+    if ((count ?? 0) >= MAX_DEVICES_PER_REFERRAL) {
+      res.status(429).json({
+        error: "Too many accounts created from this device",
+      }); return;
+    }
+    // Register device
+    await supabaseAdmin
+      .from("device_registry")
+      .upsert({ device_id, user_id: userId });
+  }
+
+  // Find the referrer
+  const { data: referrer } = await supabaseAdmin
+    .from("profiles")
+    .select("user_id")
+    .eq("referral_code", code)
+    .maybeSingle();
+
+  if (!referrer?.user_id) {
+    res.status(404).json({ error: "Referral code not found" }); return;
+  }
+
+  // Store referred_by on the new user's profile
+  await supabaseAdmin
+    .from("profiles")
+    .update({ referred_by: code })
+    .eq("user_id", userId);
+
+  req.log.info({ userId, referral_code: code }, "Referral code applied");
+  res.json({ message: "Referral code applied! Rewards unlock after your first ride." });
+});
+
+// ── POST /api/otc/referral/complete ───────────────────────────────────────────
+// Called after the new user's first ride completes.
+// Credits coins to both users and checks for the $100 milestone.
+router.post("/referral/complete", async (req, res) => {
+  const claims = parseOtcToken(req.headers.authorization);
+  if (!claims) { res.status(401).json({ error: "Unauthorized" }); return; }
+  if (!supabaseAdmin) { res.status(503).json({ error: "Supabase not configured" }); return; }
+
+  const userId = claims.sub;
+
+  // Fetch new user profile
+  const { data: profile } = await supabaseAdmin
+    .from("profiles")
+    .select("referred_by, first_ride_done")
+    .eq("user_id", userId)
+    .maybeSingle();
+
+  if (!profile) { res.status(404).json({ error: "Profile not found" }); return; }
+  if (profile.first_ride_done) {
+    res.json({ message: "Already processed" }); return;
+  }
+
+  // Mark first ride done regardless of referral
+  await supabaseAdmin
+    .from("profiles")
+    .update({ first_ride_done: true })
+    .eq("user_id", userId);
+
+  if (!profile.referred_by) {
+    res.json({ message: "No referral to process" }); return;
+  }
+
+  const refCode = profile.referred_by as string;
+
+  // Credit new user 10 coins
+  await creditOtcCoins(
+    supabaseAdmin,
+    userId,
+    REFERRAL_NEW_USER_COINS,
+    "Referral reward — first ride completed"
+  );
+
+  // Find referrer
+  const { data: referrerProfile } = await supabaseAdmin
+    .from("profiles")
+    .select("user_id, successful_referrals, milestone_claimed, wallet_balance")
+    .eq("referral_code", refCode)
+    .maybeSingle();
+
+  if (!referrerProfile?.user_id) {
+    res.json({ credited_new_user: true }); return;
+  }
+
+  const referrerId          = referrerProfile.user_id  as string;
+  const prevReferrals       = (referrerProfile.successful_referrals as number | null) ?? 0;
+  const alreadyMilestoned   = (referrerProfile.milestone_claimed   as boolean| null) ?? false;
+  const newReferrals        = prevReferrals + 1;
+
+  // Credit referrer 5 coins
+  await creditOtcCoins(
+    supabaseAdmin,
+    referrerId,
+    REFERRAL_REFERRER_COINS,
+    `Referral reward — friend completed first ride`
+  );
+
+  // Increment successful_referrals
+  const updatePayload: Record<string, unknown> = { successful_referrals: newReferrals };
+
+  // Milestone check
+  if (newReferrals >= MILESTONE_TARGET && !alreadyMilestoned) {
+    const currentWallet = (referrerProfile.wallet_balance as number | null) ?? 0;
+    updatePayload["milestone_claimed"] = true;
+    updatePayload["wallet_balance"]    = currentWallet + MILESTONE_PKR;
+
+    // Also credit milestone coins (1000 coins = 10,000 PKR)
+    await creditOtcCoins(
+      supabaseAdmin,
+      referrerId,
+      1000,
+      "🏆 $100 Mega-Milestone Achievement — 10 successful referrals!"
+    );
+
+    req.log.info({ referrerId, newReferrals }, "Milestone reached!");
+  }
+
+  await supabaseAdmin
+    .from("profiles")
+    .update(updatePayload)
+    .eq("user_id", referrerId);
+
+  req.log.info(
+    { userId, referrerId, newReferrals },
+    "Referral completed"
+  );
+
+  res.json({
+    credited_new_user:   true,
+    credited_referrer:   true,
+    referrer_referrals:  newReferrals,
+    milestone_triggered: newReferrals >= MILESTONE_TARGET && !alreadyMilestoned,
+  });
 });
 
 // ── GET /api/otc/wallet-balance/:userId ──────────────────────────────────────

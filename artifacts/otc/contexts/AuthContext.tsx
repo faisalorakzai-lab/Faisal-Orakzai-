@@ -75,6 +75,7 @@ async function syncProfileToSupabase(user: User): Promise<void> {
         phone: user.phone,
         wallet_balance: 0,
         okbond_coins: 0,
+        referral_code: user.referralCode,
       },
       { onConflict: "phone", ignoreDuplicates: false }
     );
@@ -84,12 +85,12 @@ async function syncProfileToSupabase(user: User): Promise<void> {
 
 async function fetchProfileFromSupabase(
   phone: string
-): Promise<{ name?: string; user_id?: string } | null> {
+): Promise<{ name?: string; user_id?: string; referral_code?: string } | null> {
   if (!supabase) return null;
   try {
     const { data } = await supabase
       .from("profiles")
-      .select("user_id, name")
+      .select("user_id, name, referral_code")
       .eq("phone", phone)
       .maybeSingle();
     return data ?? null;
@@ -142,7 +143,7 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
       id: userId,
       phone,
       name: existing?.name ?? undefined,
-      referralCode: generateReferralCode(),
+      referralCode: existing?.referral_code ?? generateReferralCode(),
       countryCode: pendingCountry?.code,
       dialCode: pendingCountry?.dialCode,
     };

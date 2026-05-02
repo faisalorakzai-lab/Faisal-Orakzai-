@@ -17,6 +17,7 @@ import { RideProgressBar, type LivePhase } from "@/components/ride/RideProgressB
 import { RideMapFull } from "@/components/ride/RideMapFull";
 import { clearActiveRide, getActiveRide } from "@/lib/activeRideStore";
 import { supabase } from "@/lib/supabase";
+import { useReferral } from "@/contexts/ReferralContext";
 
 const { height: SCREEN_H } = Dimensions.get("window");
 
@@ -27,6 +28,7 @@ function lerp(a: number, b: number, t: number): number {
 export default function RideActiveScreen() {
   const insets = useSafeAreaInsets();
   const rideData = getActiveRide();
+  const { completeFirstRide } = useReferral();
 
   const [phase, setPhase]             = useState<LivePhase>("assigned");
   const [carLat, setCarLat]           = useState<number | null>(null);
@@ -103,6 +105,8 @@ export default function RideActiveScreen() {
       if (etaIntervalRef.current) clearInterval(etaIntervalRef.current);
       setEtaSeconds(0);
       setShowCompleted(true);
+      // Fire referral first-ride completion (awards coins if user was referred)
+      completeFirstRide().catch(() => {});
     }
   }
 

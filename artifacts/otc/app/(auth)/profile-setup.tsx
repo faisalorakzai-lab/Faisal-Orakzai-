@@ -15,14 +15,19 @@ import {
 import { useSafeAreaInsets } from "react-native-safe-area-context";
 import { OTCLogo } from "@/components/OTCLogo";
 import { useAuth } from "@/contexts/AuthContext";
+import { useReferral } from "@/contexts/ReferralContext";
 
 export default function ProfileSetupScreen() {
   const insets = useSafeAreaInsets();
   const { setupProfile } = useAuth();
+  const { applyReferralCode } = useReferral();
   const [name, setName] = useState("");
+  const [refCode, setRefCode] = useState("");
   const [isLoading, setIsLoading] = useState(false);
   const [error, setError] = useState("");
+  const [refMsg, setRefMsg] = useState<{ ok: boolean; text: string } | null>(null);
   const inputRef = useRef<TextInput>(null);
+  const refInputRef = useRef<TextInput>(null);
 
   const nameValid = name.trim().length >= 2;
 
@@ -36,6 +41,10 @@ export default function ProfileSetupScreen() {
     setError("");
     try {
       await setupProfile(name.trim());
+      // Apply referral code if entered (fire-and-forget after profile saved)
+      if (refCode.trim().length >= 6) {
+        applyReferralCode(refCode.trim().toUpperCase()).catch(() => {});
+      }
       Haptics.notificationAsync(Haptics.NotificationFeedbackType.Success);
       router.replace("/(tabs)");
     } catch {
@@ -106,14 +115,63 @@ export default function ProfileSetupScreen() {
               autoFocus
               autoCapitalize="words"
               autoCorrect={false}
-              returnKeyType="done"
-              onSubmitEditing={handleContinue}
+              returnKeyType="next"
+              onSubmitEditing={() => refInputRef.current?.focus()}
             />
           </View>
 
           {error ? (
             <Text style={styles.errorText}>{error}</Text>
           ) : null}
+
+          {/* Referral Code Input */}
+          <View style={styles.refRow}>
+            <View
+              style={[
+                styles.inputWrapper,
+                {
+                  flex: 1,
+                  borderColor: refMsg
+                    ? refMsg.ok
+                      ? "#22C55E"
+                      : "#EF4444"
+                    : refCode
+                    ? "#FFD700"
+                    : "rgba(255,215,0,0.12)",
+                },
+              ]}
+            >
+              <Feather
+                name="tag"
+                size={16}
+                color={refCode ? "#FFD700" : "rgba(255,255,255,0.2)"}
+              />
+              <TextInput
+                ref={refInputRef}
+                style={[styles.input, { letterSpacing: 1.5, fontSize: 14 }]}
+                placeholder="Referral Code (optional)"
+                placeholderTextColor="rgba(255,255,255,0.18)"
+                value={refCode}
+                onChangeText={(v) => {
+                  setRefCode(v.toUpperCase());
+                  setRefMsg(null);
+                }}
+                autoCapitalize="characters"
+                autoCorrect={false}
+                returnKeyType="done"
+                onSubmitEditing={handleContinue}
+              />
+            </View>
+          </View>
+          {refMsg ? (
+            <Text style={[styles.errorText, { color: refMsg.ok ? "#22C55E" : "#EF4444" }]}>
+              {refMsg.text}
+            </Text>
+          ) : (
+            <Text style={styles.refHint}>
+              Have a referral code? Get 10 bonus OTC Coins after your first ride.
+            </Text>
+          )}
 
           <TouchableOpacity
             style={[
@@ -244,6 +302,13 @@ const styles = StyleSheet.create({
   },
   btnInner: { flexDirection: "row", alignItems: "center", gap: 8 },
   btnText: { fontSize: 16, fontFamily: "Inter_600SemiBold" },
+  refRow: { flexDirection: "row", gap: 10 },
+  refHint: {
+    fontSize: 11,
+    fontFamily: "Inter_400Regular",
+    color: "rgba(255,215,0,0.4)",
+    marginTop: -6,
+  },
   walletHint: {
     flexDirection: "row",
     alignItems: "center",
