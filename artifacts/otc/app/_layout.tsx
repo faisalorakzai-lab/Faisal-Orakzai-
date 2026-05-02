@@ -16,6 +16,7 @@ import { SafeAreaProvider } from "react-native-safe-area-context";
 import { ErrorBoundary } from "@/components/ErrorBoundary";
 import { AuthProvider, useAuth } from "@/contexts/AuthContext";
 import { CharacterProvider } from "@/contexts/CharacterContext";
+import { LocationProvider } from "@/contexts/LocationContext";
 import { RideProvider } from "@/contexts/RideContext";
 import { WalletProvider } from "@/contexts/WalletContext";
 
@@ -89,15 +90,17 @@ export default function RootLayout() {
           <GestureHandlerRootView style={{ flex: 1 }}>
             <KeyboardProvider>
               <AuthProvider>
-                <WalletProvider>
-                  <CharacterProvider>
-                    <RideProvider>
-                      <AuthGate>
-                        <RootLayoutNav />
-                      </AuthGate>
-                    </RideProvider>
-                  </CharacterProvider>
-                </WalletProvider>
+                <LocationProvider>
+                  <WalletProvider>
+                    <CharacterProvider>
+                      <RideProvider>
+                        <AuthGate>
+                          <RootLayoutNav />
+                        </AuthGate>
+                      </RideProvider>
+                    </CharacterProvider>
+                  </WalletProvider>
+                </LocationProvider>
               </AuthProvider>
             </KeyboardProvider>
           </GestureHandlerRootView>

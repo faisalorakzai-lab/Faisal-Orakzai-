@@ -1,9 +1,11 @@
-import { Feather } from "@expo/vector-icons";
+import { MaterialCommunityIcons } from "@expo/vector-icons";
 import * as Haptics from "expo-haptics";
 import { router } from "expo-router";
-import React from "react";
+import React, { useRef } from "react";
 import {
+  Animated,
   Platform,
+  Pressable,
   ScrollView,
   StyleSheet,
   Text,
@@ -11,294 +13,347 @@ import {
   View,
 } from "react-native";
 import { useSafeAreaInsets } from "react-native-safe-area-context";
-import { CoinBadge } from "@/components/CoinBadge";
-import { GlassCard } from "@/components/GlassCard";
-import { OTCLogo } from "@/components/OTCLogo";
-import { useAuth } from "@/contexts/AuthContext";
-import { useWallet } from "@/contexts/WalletContext";
-import { useColors } from "@/hooks/useColors";
 
-interface ServiceTile {
+import { useAuth } from "@/contexts/AuthContext";
+import { useLocation } from "@/contexts/LocationContext";
+import { useWallet } from "@/contexts/WalletContext";
+
+const GOLD = "#FFD700";
+const CARD_BG = "#111111";
+const SEARCH_BG = "#181818";
+
+interface ServicePillar {
   id: string;
   label: string;
-  icon: string;
-  description: string;
-  color: string;
-  available: boolean;
+  sub: string;
+  icon: keyof typeof MaterialCommunityIcons.glyphMap;
+  route: string;
+  active: boolean;
 }
 
-const SERVICES: ServiceTile[] = [
-  {
-    id: "ride",
-    label: "Ride",
-    icon: "navigation",
-    description: "Book a ride instantly",
-    color: "#FFD700",
-    available: true,
-  },
-  {
-    id: "delivery",
-    label: "Delivery",
-    icon: "package",
-    description: "Send packages fast",
-    color: "#FFF3A3",
-    available: true,
-  },
-  {
-    id: "rental",
-    label: "Rent-a-Car",
-    icon: "truck",
-    description: "Premium vehicle rentals",
-    color: "#B8960C",
-    available: true,
-  },
-  {
-    id: "hotel",
-    label: "Hotel",
-    icon: "home",
-    description: "Find the best stays",
-    color: "#FFD700",
-    available: true,
-  },
+const PILLARS: ServicePillar[] = [
+  { id: "ride",     label: "Ride",        sub: "Premium Cars",   icon: "car-sports",     route: "/services/ride",    active: true  },
+  { id: "bike",     label: "Bike",        sub: "Fast Mobility",  icon: "motorbike",      route: "/services/bike",    active: false },
+  { id: "delivery", label: "Delivery",    sub: "Logistics",      icon: "package-variant",route: "/services/delivery",active: true  },
+  { id: "rental",   label: "Rent A Car",  sub: "Elite Fleet",    icon: "car-key",        route: "/services/rental",  active: true  },
+  { id: "hotel",    label: "Hotels",      sub: "Luxury Stays",   icon: "bed-king-outline",route: "/services/hotel",  active: false },
+  { id: "airlines", label: "Airlines",    sub: "Global Travel",  icon: "airplane",       route: "/services/airlines",active: false },
 ];
 
-export default function HomeScreen() {
-  const colors = useColors();
-  const insets = useSafeAreaInsets();
-  const { user } = useAuth();
-  const { balance } = useWallet();
+function ServiceTile({ pillar }: { pillar: ServicePillar }) {
+  const glowAnim = useRef(new Animated.Value(0)).current;
 
-  const topPad =
-    insets.top + (Platform.OS === "web" ? 67 : 0);
+  function handlePressIn() {
+    Haptics.impactAsync(Haptics.ImpactFeedbackStyle.Medium);
+    Animated.timing(glowAnim, {
+      toValue: 1,
+      duration: 120,
+      useNativeDriver: true,
+    }).start();
+  }
 
-  function handleService(service: ServiceTile) {
-    if (!service.available) {
+  function handlePressOut() {
+    Animated.timing(glowAnim, {
+      toValue: 0,
+      duration: 300,
+      useNativeDriver: true,
+    }).start();
+  }
+
+  function handlePress() {
+    if (!pillar.active) {
       Haptics.notificationAsync(Haptics.NotificationFeedbackType.Warning);
       return;
     }
-    Haptics.impactAsync(Haptics.ImpactFeedbackStyle.Light);
-    router.push(`/services/${service.id}`);
+    router.push(pillar.route as any);
   }
 
+  const glowOpacity = glowAnim.interpolate({
+    inputRange: [0, 1],
+    outputRange: [0, 0.18],
+  });
+
   return (
-    <View style={[styles.root, { backgroundColor: colors.background }]}>
+    <Pressable
+      style={styles.tileWrapper}
+      onPressIn={handlePressIn}
+      onPressOut={handlePressOut}
+      onPress={handlePress}
+    >
+      <View
+        style={[
+          styles.tile,
+          !pillar.active && styles.tileDisabled,
+        ]}
+      >
+        <Animated.View
+          style={[
+            StyleSheet.absoluteFill,
+            styles.tileGlow,
+            { opacity: glowOpacity },
+          ]}
+        />
+
+        <View style={styles.iconWrap}>
+          <MaterialCommunityIcons
+            name={pillar.icon}
+            size={32}
+            color={pillar.active ? GOLD : "#555555"}
+          />
+        </View>
+
+        <Text style={[styles.tileLabel, !pillar.active && styles.dimText]}>
+          {pillar.label}
+        </Text>
+        <Text style={[styles.tileSub, !pillar.active && styles.dimText]}>
+          {pillar.active ? pillar.sub : "Coming Soon"}
+        </Text>
+
+        {!pillar.active && (
+          <View style={styles.comingSoonBadge}>
+            <Text style={styles.comingSoonText}>SOON</Text>
+          </View>
+        )}
+      </View>
+    </Pressable>
+  );
+}
+
+export default function HomeScreen() {
+  const insets = useSafeAreaInsets();
+  const { user } = useAuth();
+  const { balance } = useWallet();
+  const { city, district, isLoading } = useLocation();
+
+  const topPad = insets.top + (Platform.OS === "web" ? 67 : 0);
+  const initials = user?.name
+    ? user.name.slice(0, 2).toUpperCase()
+    : (user?.phone ?? "OT").slice(-2);
+
+  return (
+    <View style={styles.root}>
       <ScrollView
         contentContainerStyle={[
           styles.scroll,
           {
             paddingTop: topPad + 16,
-            paddingBottom: insets.bottom + (Platform.OS === "web" ? 34 : 80),
+            paddingBottom: insets.bottom + (Platform.OS === "web" ? 40 : 90),
           },
         ]}
         showsVerticalScrollIndicator={false}
       >
+        {/* ── TOP BAR ── */}
         <View style={styles.topBar}>
-          <View style={styles.logoRow}>
-            <OTCLogo size="sm" />
-            <View>
-              <Text style={[styles.appName, { color: colors.gold }]}>OTC</Text>
-              <Text style={[styles.appSub, { color: colors.mutedForeground }]}>
-                Super App
+          {/* Location */}
+          <TouchableOpacity
+            style={styles.locationRow}
+            onPress={() => {}}
+            activeOpacity={0.7}
+          >
+            <MaterialCommunityIcons
+              name="map-marker"
+              size={16}
+              color={GOLD}
+            />
+            <View style={styles.locationText}>
+              <Text style={styles.locationLabel}>Your Location</Text>
+              <Text style={styles.locationCity} numberOfLines={1}>
+                {isLoading ? "Detecting..." : city}
+                {!isLoading && district ? `, ${district}` : ""}
               </Text>
             </View>
-          </View>
+            <MaterialCommunityIcons
+              name="chevron-down"
+              size={14}
+              color="#555"
+            />
+          </TouchableOpacity>
+
+          {/* Profile */}
           <TouchableOpacity
-            style={[
-              styles.walletBadge,
-              {
-                backgroundColor: colors.glassBackground,
-                borderColor: colors.glassBorder,
-                borderRadius: 24,
-              },
-            ]}
-            onPress={() => router.push("/(tabs)/wallet")}
+            style={styles.profileBtn}
+            onPress={() => {
+              Haptics.impactAsync(Haptics.ImpactFeedbackStyle.Light);
+              router.push("/(tabs)/profile");
+            }}
             activeOpacity={0.8}
           >
-            <CoinBadge amount={balance} size="sm" />
+            <Text style={styles.profileInitials}>{initials}</Text>
           </TouchableOpacity>
         </View>
 
-        <View style={styles.greetRow}>
-          <Text style={[styles.greet, { color: colors.mutedForeground }]}>
-            Welcome back
-          </Text>
-          <Text style={[styles.greetName, { color: colors.foreground }]}>
-            {user?.name ?? user?.phone ?? "Traveler"}
-          </Text>
-        </View>
+        {/* ── SEARCH BAR ── */}
+        <TouchableOpacity
+          style={styles.searchBar}
+          activeOpacity={0.8}
+          onPress={() => Haptics.impactAsync(Haptics.ImpactFeedbackStyle.Light)}
+        >
+          <MaterialCommunityIcons name="magnify" size={20} color={GOLD} />
+          <Text style={styles.searchPlaceholder}>Search OTC Services</Text>
+        </TouchableOpacity>
 
-        <GlassCard variant="gold" style={styles.heroBanner}>
-          <View style={styles.heroContent}>
-            <View>
-              <Text style={[styles.heroTitle, { color: colors.gold }]}>
-                Your OTC Wallet
-              </Text>
-              <CoinBadge amount={balance} size="lg" showLabel />
-            </View>
-            <TouchableOpacity
-              style={[
-                styles.heroBtn,
-                { backgroundColor: colors.gold, borderRadius: 10 },
-              ]}
-              onPress={() => router.push("/(tabs)/wallet")}
-              activeOpacity={0.8}
-            >
-              <Feather name="arrow-right" size={18} color="#050505" />
-            </TouchableOpacity>
+        {/* ── WALLET STRIP ── */}
+        <TouchableOpacity
+          style={styles.walletStrip}
+          onPress={() => router.push("/(tabs)/wallet")}
+          activeOpacity={0.85}
+        >
+          <View style={styles.walletLeft}>
+            <MaterialCommunityIcons name="star-circle" size={18} color={GOLD} />
+            <Text style={styles.walletLabel}>OTC Coins</Text>
           </View>
-        </GlassCard>
+          <Text style={styles.walletBalance}>{balance.toLocaleString()} coins</Text>
+          <MaterialCommunityIcons name="chevron-right" size={16} color="#555" />
+        </TouchableOpacity>
 
-        <Text style={[styles.sectionTitle, { color: colors.foreground }]}>
-          Our Services
-        </Text>
+        {/* ── SERVICES HEADER ── */}
+        <Text style={styles.sectionHeader}>OUR SERVICES</Text>
 
+        {/* ── 6-PILLAR GRID ── */}
         <View style={styles.grid}>
-          {SERVICES.map((service) => (
-            <TouchableOpacity
-              key={service.id}
-              style={styles.tileWrapper}
-              onPress={() => handleService(service)}
-              activeOpacity={0.85}
-            >
-              <GlassCard
-                style={[
-                  styles.tile,
-                  !service.available && styles.tileDisabled,
-                ]}
-              >
-                <View
-                  style={[
-                    styles.tileIcon,
-                    {
-                      backgroundColor: service.available
-                        ? "rgba(255,215,0,0.1)"
-                        : "rgba(255,215,0,0.04)",
-                      borderRadius: 14,
-                    },
-                  ]}
-                >
-                  <Feather
-                    name={service.icon as any}
-                    size={28}
-                    color={service.available ? service.color : colors.mutedForeground}
-                  />
-                </View>
-                <Text
-                  style={[
-                    styles.tileLabel,
-                    {
-                      color: service.available
-                        ? colors.foreground
-                        : colors.mutedForeground,
-                    },
-                  ]}
-                >
-                  {service.label}
-                </Text>
-                <Text
-                  style={[
-                    styles.tileDesc,
-                    { color: colors.mutedForeground },
-                  ]}
-                >
-                  {service.available ? service.description : "Coming soon"}
-                </Text>
-              </GlassCard>
-            </TouchableOpacity>
+          {PILLARS.map((p) => (
+            <ServiceTile key={p.id} pillar={p} />
           ))}
         </View>
 
-        <GlassCard style={styles.referralCard}>
-          <View style={styles.referralContent}>
-            <Feather name="gift" size={22} color={colors.gold} />
-            <View style={styles.referralText}>
-              <Text style={[styles.referralTitle, { color: colors.foreground }]}>
-                Refer & Earn
-              </Text>
-              <Text style={[styles.referralSub, { color: colors.mutedForeground }]}>
-                Earn 5 OTC Coins per referral. New users get 10 free!
-              </Text>
-            </View>
-            <TouchableOpacity
-              onPress={() => router.push("/(tabs)/profile")}
-              activeOpacity={0.8}
-            >
-              <Feather name="chevron-right" size={20} color={colors.gold} />
-            </TouchableOpacity>
+        {/* ── REFER STRIP ── */}
+        <TouchableOpacity
+          style={styles.referStrip}
+          onPress={() => {
+            Haptics.impactAsync(Haptics.ImpactFeedbackStyle.Light);
+            router.push("/(tabs)/profile");
+          }}
+          activeOpacity={0.85}
+        >
+          <MaterialCommunityIcons name="gift-outline" size={20} color={GOLD} />
+          <View style={styles.referText}>
+            <Text style={styles.referTitle}>Refer & Earn OTC Coins</Text>
+            <Text style={styles.referSub}>
+              You earn 5 · Friends get 10 free coins
+            </Text>
           </View>
-        </GlassCard>
+          <MaterialCommunityIcons name="chevron-right" size={18} color={GOLD} />
+        </TouchableOpacity>
       </ScrollView>
     </View>
   );
 }
 
 const styles = StyleSheet.create({
-  root: { flex: 1 },
-  scroll: { paddingHorizontal: 20 },
+  root: {
+    flex: 1,
+    backgroundColor: "#000000",
+  },
+  scroll: {
+    paddingHorizontal: 18,
+  },
+
+  /* Top bar */
   topBar: {
     flexDirection: "row",
-    justifyContent: "space-between",
-    alignItems: "center",
-    marginBottom: 24,
-  },
-  logoRow: {
-    flexDirection: "row",
-    alignItems: "center",
-    gap: 10,
-  },
-  appName: {
-    fontSize: 18,
-    fontFamily: "Inter_700Bold",
-    letterSpacing: 1,
-  },
-  appSub: {
-    fontSize: 11,
-    fontFamily: "Inter_400Regular",
-    letterSpacing: 0.5,
-  },
-  walletBadge: {
-    borderWidth: 1,
-    paddingHorizontal: 12,
-    paddingVertical: 7,
-  },
-  greetRow: {
-    marginBottom: 20,
-  },
-  greet: {
-    fontSize: 13,
-    fontFamily: "Inter_400Regular",
-  },
-  greetName: {
-    fontSize: 22,
-    fontFamily: "Inter_700Bold",
-  },
-  heroBanner: {
-    padding: 20,
-    marginBottom: 28,
-  },
-  heroContent: {
-    flexDirection: "row",
     alignItems: "center",
     justifyContent: "space-between",
+    marginBottom: 18,
   },
-  heroTitle: {
-    fontSize: 13,
-    fontFamily: "Inter_500Medium",
-    marginBottom: 6,
+  locationRow: {
+    flexDirection: "row",
+    alignItems: "center",
+    gap: 6,
+    flex: 1,
+  },
+  locationText: { flex: 1 },
+  locationLabel: {
+    fontSize: 10,
+    fontFamily: "Inter_400Regular",
+    color: "#666",
     letterSpacing: 0.5,
     textTransform: "uppercase",
   },
-  heroBtn: {
+  locationCity: {
+    fontSize: 14,
+    fontFamily: "Inter_600SemiBold",
+    color: "#FFFFFF",
+    marginTop: 1,
+  },
+  profileBtn: {
     width: 40,
     height: 40,
+    borderRadius: 20,
+    borderWidth: 1.5,
+    borderColor: GOLD,
     alignItems: "center",
     justifyContent: "center",
+    backgroundColor: "rgba(255,215,0,0.06)",
   },
-  sectionTitle: {
-    fontSize: 18,
+  profileInitials: {
+    fontSize: 13,
     fontFamily: "Inter_700Bold",
+    color: GOLD,
+    letterSpacing: 0.5,
+  },
+
+  /* Search */
+  searchBar: {
+    flexDirection: "row",
+    alignItems: "center",
+    gap: 10,
+    backgroundColor: SEARCH_BG,
+    borderRadius: 12,
+    paddingHorizontal: 14,
+    paddingVertical: 13,
+    marginBottom: 14,
+    borderWidth: 1,
+    borderColor: "#222222",
+  },
+  searchPlaceholder: {
+    fontSize: 14,
+    fontFamily: "Inter_400Regular",
+    color: GOLD,
+    opacity: 0.7,
+    flex: 1,
+  },
+
+  /* Wallet strip */
+  walletStrip: {
+    flexDirection: "row",
+    alignItems: "center",
+    backgroundColor: CARD_BG,
+    borderRadius: 12,
+    paddingHorizontal: 14,
+    paddingVertical: 12,
+    marginBottom: 28,
+    borderWidth: 1,
+    borderColor: "rgba(255,215,0,0.15)",
+    gap: 10,
+  },
+  walletLeft: {
+    flexDirection: "row",
+    alignItems: "center",
+    gap: 6,
+    flex: 1,
+  },
+  walletLabel: {
+    fontSize: 13,
+    fontFamily: "Inter_500Medium",
+    color: "#AAAAAA",
+  },
+  walletBalance: {
+    fontSize: 14,
+    fontFamily: "Inter_700Bold",
+    color: GOLD,
+  },
+
+  /* Section header */
+  sectionHeader: {
+    fontSize: 11,
+    fontFamily: "Inter_700Bold",
+    color: "#444444",
+    letterSpacing: 2,
+    textTransform: "uppercase",
     marginBottom: 14,
   },
+
+  /* Grid */
   grid: {
     flexDirection: "row",
     flexWrap: "wrap",
@@ -306,51 +361,89 @@ const styles = StyleSheet.create({
     marginBottom: 24,
   },
   tileWrapper: {
-    width: "47%",
+    width: "47.5%",
   },
   tile: {
+    backgroundColor: CARD_BG,
+    borderRadius: 16,
+    borderWidth: 1,
+    borderColor: "#1E1E1E",
     padding: 18,
-    minHeight: 140,
-    justifyContent: "space-between",
-    gap: 10,
+    minHeight: 148,
+    overflow: "hidden",
+    gap: 8,
   },
   tileDisabled: {
-    opacity: 0.5,
+    borderColor: "#161616",
   },
-  tileIcon: {
-    width: 54,
-    height: 54,
+  tileGlow: {
+    backgroundColor: GOLD,
+    borderRadius: 16,
+  },
+  iconWrap: {
+    width: 52,
+    height: 52,
+    borderRadius: 14,
+    backgroundColor: "rgba(255,215,0,0.08)",
     alignItems: "center",
     justifyContent: "center",
+    marginBottom: 4,
   },
   tileLabel: {
-    fontSize: 16,
-    fontFamily: "Inter_600SemiBold",
+    fontSize: 15,
+    fontFamily: "Inter_700Bold",
+    color: "#FFFFFF",
+    letterSpacing: 0.2,
   },
-  tileDesc: {
-    fontSize: 12,
+  tileSub: {
+    fontSize: 11,
     fontFamily: "Inter_400Regular",
-    lineHeight: 16,
+    color: "#666666",
+    lineHeight: 15,
   },
-  referralCard: {
-    padding: 16,
+  dimText: {
+    color: "#444444",
   },
-  referralContent: {
+  comingSoonBadge: {
+    position: "absolute",
+    top: 12,
+    right: 12,
+    backgroundColor: "rgba(255,215,0,0.08)",
+    borderRadius: 4,
+    paddingHorizontal: 5,
+    paddingVertical: 2,
+    borderWidth: 1,
+    borderColor: "rgba(255,215,0,0.12)",
+  },
+  comingSoonText: {
+    fontSize: 8,
+    fontFamily: "Inter_700Bold",
+    color: "#555555",
+    letterSpacing: 0.8,
+  },
+
+  /* Refer strip */
+  referStrip: {
     flexDirection: "row",
     alignItems: "center",
-    gap: 14,
+    backgroundColor: CARD_BG,
+    borderRadius: 14,
+    borderWidth: 1,
+    borderColor: "rgba(255,215,0,0.12)",
+    paddingHorizontal: 16,
+    paddingVertical: 14,
+    gap: 12,
   },
-  referralText: {
-    flex: 1,
-    gap: 4,
-  },
-  referralTitle: {
-    fontSize: 15,
+  referText: { flex: 1 },
+  referTitle: {
+    fontSize: 14,
     fontFamily: "Inter_600SemiBold",
+    color: "#FFFFFF",
   },
-  referralSub: {
+  referSub: {
     fontSize: 12,
     fontFamily: "Inter_400Regular",
-    lineHeight: 16,
+    color: "#666666",
+    marginTop: 2,
   },
 });
