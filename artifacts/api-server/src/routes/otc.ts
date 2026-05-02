@@ -231,6 +231,144 @@ router.get("/health", (_req, res) => {
   res.json({ supabase: supabaseAdmin !== null });
 });
 
+// ══════════════════════════════════════════════════════════════════════════════
+// ── MARCUS AI ─────────────────────────────────────────────────────────────────
+// ══════════════════════════════════════════════════════════════════════════════
+
+const MARCUS_SYSTEM = `You are Marcus, the AI concierge for OTC (Orakzai Transit & Commerce) Super App — Pakistan's premier luxury mobility and services platform. You are knowledgeable, elegant, and speak with the confidence of a five-star concierge.
+
+OTC Services you are an expert on:
+1. RIDES: Three tiers — Community (bike/auto, lowest fare), Autonomous (standard car), Sovereign (luxury car, highest fare). Instant GPS-based driver matching. Fares calculated per km. Payment via cash or OTC Wallet.
+2. RENT A CAR: Premium fleet of cars available for 1–30 days. Rate negotiation (OTC Signature Offer) available. Admin reviews and confirms all bookings.
+3. HOTEL & RESIDENCY: 5-star properties across Pakistan — Serena Islamabad, Marriott Islamabad, Pearl Continental Lahore & Peshawar, Avari Towers Lahore, Mövenpick Karachi. Executive Suite / Deluxe Room / Business Studio per property. OTC Concierge rate negotiation. Digital check-in pass on confirmation.
+4. AIRLINES & GLOBAL TRAVEL: Domestic (10 Pakistani cities) and International (15 global destinations). Economy, Business, and First Class. Fare engine suggests PKR prices. OTC Signature Offer for custom fares. Visa assistance flag for international travel. Passport-style digital ticket issued on confirmation.
+5. OTC WALLET: Secure digital wallet for cashless payments across all OTC services. Top up and pay instantly.
+6. OKBOND: OTC's loyalty bond system. Earn points with every ride and booking. Redeem for discounts on future services.
+7. REFERRAL PROGRAM: Share your referral code. Earn wallet credits when a friend completes their first OTC ride.
+8. ORDER HISTORY: View all past rides, hotel, car, and flight bookings in one unified screen.
+
+Policies:
+- All bookings (hotel, car, flight) are manually reviewed and confirmed by an Orakzai admin. Users receive a notification once confirmed.
+- Ride disputes or overcharges: direct user to use 'Report a Ride Issue' or escalate to Orakzai Executive.
+- Payment disputes: direct user to their OTC Wallet transaction history or escalate.
+- Account deletion: available in Settings > Delete Account.
+
+Guidelines:
+- Be concise and helpful. 2-3 sentences max for simple queries.
+- For complex issues you cannot resolve, suggest the user tap 'Talk to Orakzai Executive'.
+- If the user writes in Urdu/Roman Urdu, respond in the same language.
+- Never reveal you are powered by any specific AI model. You are Marcus — OTC's concierge AI.
+- Do not discuss competitor apps or services.`;
+
+const GEMINI_API_KEY = process.env.GEMINI_API_KEY ?? "";
+
+// ── POST /api/otc/marcus/chat ─────────────────────────────────────────────────
+router.post("/marcus/chat", async (req, res) => {
+  if (!GEMINI_API_KEY) { res.status(503).json({ error: "AI service not configured" }); return; }
+
+  const { message, history } = req.body as {
+    message?: string;
+    history?: { role: string; text: string }[];
+  };
+  if (!message?.trim()) { res.status(400).json({ error: "message is required" }); return; }
+
+  const contents: { role: string; parts: { text: string }[] }[] = [
+    { role: "user", parts: [{ text: MARCUS_SYSTEM }] },
+    { role: "model", parts: [{ text: "Understood. I am Marcus, the OTC concierge AI. How can I assist you today?" }] },
+  ];
+
+  for (const h of (history ?? [])) {
+    if (h.role === "user" || h.role === "assistant") {
+      contents.push({ role: h.role === "assistant" ? "model" : "user", parts: [{ text: h.text }] });
+    }
+  }
+  contents.push({ role: "user", parts: [{ text: message.trim() }] });
+
+  try {
+    const geminiRes = await fetch(
+      `https://generativelanguage.googleapis.com/v1beta/models/gemini-2.0-flash:generateContent?key=${GEMINI_API_KEY}`,
+      {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          contents,
+          generationConfig: { temperature: 0.7, maxOutputTokens: 512 },
+        }),
+      },
+    );
+
+    if (!geminiRes.ok) {
+      const errText = await geminiRes.text();
+      req.log.error({ status: geminiRes.status, body: errText }, "Gemini API error");
+      res.status(502).json({ error: "AI service error" });
+      return;
+    }
+
+    const geminiData = await geminiRes.json() as {
+      candidates?: { content?: { parts?: { text?: string }[] } }[];
+    };
+
+    const reply = geminiData.candidates?.[0]?.content?.parts?.[0]?.text?.trim()
+      ?? "I'm having trouble connecting right now. Please try again or escalate to an Orakzai Executive.";
+
+    res.json({ reply });
+  } catch (err) {
+    req.log.error({ err }, "Marcus AI fetch failed");
+    res.status(500).json({ error: "Failed to reach AI service" });
+  }
+});
+
+// ══════════════════════════════════════════════════════════════════════════════
+// ── SUPPORT TICKETS ───────────────────────────────────────────────────────────
+// ══════════════════════════════════════════════════════════════════════════════
+
+// ── POST /api/otc/support/ticket ──────────────────────────────────────────────
+router.post("/support/ticket", async (req, res) => {
+  const auth = requireAuth(req.headers.authorization);
+  if ("error" in auth) { res.status(auth.status).json({ error: auth.error }); return; }
+  if (!supabaseAdmin)  { res.status(503).json({ error: "Supabase not configured" }); return; }
+
+  const { category, subject, message } = req.body as {
+    category?: string; subject?: string; message?: string;
+  };
+  if (!subject?.trim()) { res.status(400).json({ error: "subject is required" }); return; }
+
+  const { data, error } = await supabaseAdmin
+    .from("support_tickets")
+    .insert({
+      user_id:  auth.claims.sub,
+      category: category?.trim() ?? "general",
+      subject:  subject.trim(),
+      message:  message?.trim() ?? null,
+      status:   "open",
+    })
+    .select()
+    .single();
+
+  if (error || !data) { res.status(500).json({ error: "Failed to create ticket" }); return; }
+
+  req.log.info({ userId: auth.claims.sub, category, subject }, "Support ticket created");
+  res.status(201).json({ ticket: { id: data.id as string, status: "open" } });
+});
+
+// ── GET /api/otc/support/tickets/:userId ──────────────────────────────────────
+router.get("/support/tickets/:userId", async (req, res) => {
+  const { userId } = req.params;
+  const auth = requireAuth(req.headers.authorization);
+  if ("error" in auth) { res.status(auth.status).json({ error: auth.error }); return; }
+  if (auth.claims.sub !== userId) { res.status(403).json({ error: "Forbidden" }); return; }
+  if (!supabaseAdmin) { res.status(503).json({ error: "Supabase not configured" }); return; }
+
+  const { data, error } = await supabaseAdmin
+    .from("support_tickets")
+    .select("*")
+    .eq("user_id", userId)
+    .order("created_at", { ascending: false });
+
+  if (error) { res.status(500).json({ error: "Failed to fetch tickets" }); return; }
+  res.json({ tickets: data ?? [] });
+});
+
 // ── POST /api/otc/auth/token ──────────────────────────────────────────────────
 // Issues a server-signed HMAC-SHA256 token for the OTC app.
 // Client NEVER mints its own tokens — only the server can produce valid tokens.
