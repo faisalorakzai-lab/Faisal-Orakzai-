@@ -68,13 +68,9 @@ export default function InviteScreen() {
     try {
       const result = await applyReferralCode(claimCode.trim().toUpperCase());
       if (result.ok) {
-        addTransaction({
-          type: "credit",
-          amount: 10,
-          description: "Referral bonus — new user reward",
-          category: "referral",
-        });
         Haptics.notificationAsync(Haptics.NotificationFeedbackType.Success);
+        // No local wallet credit here — rewards are only granted server-side
+        // after the new user completes their first ride (/referral/complete).
       } else {
         Haptics.notificationAsync(Haptics.NotificationFeedbackType.Error);
       }

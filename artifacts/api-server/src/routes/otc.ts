@@ -280,9 +280,28 @@ router.post("/referral/apply", async (req, res) => {
 router.post("/referral/complete", async (req, res) => {
   const claims = parseOtcToken(req.headers.authorization);
   if (!claims) { res.status(401).json({ error: "Unauthorized" }); return; }
+  // Enforce token expiry (consistent with all other OTC auth paths)
+  if (Math.floor(Date.now() / 1000) > claims.exp) {
+    res.status(401).json({ error: "Token expired" }); return;
+  }
   if (!supabaseAdmin) { res.status(503).json({ error: "Supabase not configured" }); return; }
 
   const userId = claims.sub;
+
+  // ── Verify a real completed ride exists for this user ─────────────────────
+  // This prevents the endpoint from being triggered without a genuine ride.
+  const { data: completedRide } = await supabaseAdmin
+    .from("ride_requests")
+    .select("id")
+    .eq("user_id", userId)
+    .eq("status", "completed")
+    .limit(1)
+    .maybeSingle();
+
+  if (!completedRide) {
+    res.status(403).json({ error: "No completed ride found for this user" });
+    return;
+  }
 
   // Fetch new user profile
   const { data: profile } = await supabaseAdmin
