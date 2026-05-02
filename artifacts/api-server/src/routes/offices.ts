@@ -34,14 +34,14 @@ router.put("/:id", async (req, res) => {
     lat: body.lat,
     lng: body.lng,
   }).where(eq(officesTable.id, id)).returning();
-  if (!office) return res.status(404).json({ error: "Not found" });
+  if (!office) { res.status(404).json({ error: "Not found" }); return; }
   res.json({ ...office, createdAt: office.createdAt.toISOString() });
 });
 
 router.delete("/:id", async (req, res) => {
   const { id } = DeleteOfficeParams.parse(req.params);
   const [deleted] = await db.delete(officesTable).where(eq(officesTable.id, id)).returning();
-  if (!deleted) return res.status(404).json({ error: "Not found" });
+  if (!deleted) { res.status(404).json({ error: "Not found" }); return; }
   res.status(204).end();
 });
 
