@@ -18,6 +18,7 @@ import { ErrorBoundary } from "@/components/ErrorBoundary";
 import { AuthProvider, useAuth } from "@/contexts/AuthContext";
 import { CharacterProvider } from "@/contexts/CharacterContext";
 import { LocationProvider } from "@/contexts/LocationContext";
+import { HotelProvider } from "@/contexts/HotelContext";
 import { ReferralProvider } from "@/contexts/ReferralContext";
 import { RentalProvider } from "@/contexts/RentalContext";
 import { RideProvider } from "@/contexts/RideContext";
@@ -73,6 +74,14 @@ function RootLayoutNav() {
         name="services/rental-bookings"
         options={{ presentation: "card", headerShown: false, animation: "slide_from_right" }}
       />
+      <Stack.Screen
+        name="services/hotel"
+        options={{ presentation: "card", headerShown: false, animation: "slide_from_right" }}
+      />
+      <Stack.Screen
+        name="services/hotel-bookings"
+        options={{ presentation: "card", headerShown: false, animation: "slide_from_right" }}
+      />
     </Stack>
   );
 }
@@ -119,13 +128,15 @@ export default function RootLayout() {
                   <WalletProvider>
                     <ReferralProvider>
                       <RentalProvider>
-                        <CharacterProvider>
-                          <RideProvider>
-                            <AuthGate>
-                              <RootLayoutNav />
-                            </AuthGate>
-                          </RideProvider>
-                        </CharacterProvider>
+                        <HotelProvider>
+                          <CharacterProvider>
+                            <RideProvider>
+                              <AuthGate>
+                                <RootLayoutNav />
+                              </AuthGate>
+                            </RideProvider>
+                          </CharacterProvider>
+                        </HotelProvider>
                       </RentalProvider>
                     </ReferralProvider>
                   </WalletProvider>

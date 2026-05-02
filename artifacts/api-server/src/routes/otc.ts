@@ -737,6 +737,223 @@ router.post("/match-driver", async (req, res) => {
 });
 
 // ══════════════════════════════════════════════════════════════════════════════
+// ── HOTEL & RESIDENCY MODULE ───────────────────────────────────────────────────
+// ══════════════════════════════════════════════════════════════════════════════
+
+// ── GET /api/otc/hotels ────────────────────────────────────────────────────────
+router.get("/hotels", async (_req, res) => {
+  if (!supabaseAdmin) { res.status(503).json({ error: "Supabase not configured" }); return; }
+
+  const { data, error } = await supabaseAdmin
+    .from("hotels")
+    .select("*")
+    .eq("available", true)
+    .order("sort_order", { ascending: true });
+
+  if (error) { res.status(500).json({ error: "Failed to fetch hotels" }); return; }
+
+  const hotels = (data ?? []).map((row) => ({
+    id:              row.id              as string,
+    name:            row.name            as string,
+    city:            row.city            as string,
+    stars:           row.stars           as number,
+    description:     row.description     as string,
+    cover_image_url: row.cover_image_url as string | null,
+    images:          (row.images         as string[]) ?? [],
+    starting_rate:   row.starting_rate   as number,
+    room_types:      (row.room_types     as object[]) ?? [],
+    amenities:       (row.amenities      as string[]) ?? [],
+    available:       row.available       as boolean,
+  }));
+  res.json({ hotels });
+});
+
+// ── POST /api/otc/hotel/request ────────────────────────────────────────────────
+router.post("/hotel/request", async (req, res) => {
+  const auth = requireAuth(req.headers.authorization);
+  if ("error" in auth) { res.status(auth.status).json({ error: auth.error }); return; }
+  if (!supabaseAdmin)  { res.status(503).json({ error: "Supabase not configured" }); return; }
+
+  const userId = auth.claims.sub;
+  const { hotel_id, room_type, room_rate, check_in, check_out, nights, proposed_rate } = req.body as {
+    hotel_id?: string; room_type?: string; room_rate?: number;
+    check_in?: string; check_out?: string; nights?: number;
+    proposed_rate?: number | null;
+  };
+
+  if (!hotel_id?.trim())  { res.status(400).json({ error: "hotel_id is required" });  return; }
+  if (!room_type?.trim()) { res.status(400).json({ error: "room_type is required" }); return; }
+  if (!check_in?.trim())  { res.status(400).json({ error: "check_in is required" });  return; }
+  if (!check_out?.trim()) { res.status(400).json({ error: "check_out is required" }); return; }
+  if (!nights || nights < 1) { res.status(400).json({ error: "nights must be >= 1" }); return; }
+
+  const { data: hotel } = await supabaseAdmin
+    .from("hotels")
+    .select("id, name, cover_image_url, available, starting_rate")
+    .eq("id", hotel_id.trim())
+    .maybeSingle();
+
+  if (!hotel)          { res.status(404).json({ error: "Hotel not found" });                return; }
+  if (!hotel.available){ res.status(409).json({ error: "Hotel is fully booked" });          return; }
+
+  const canonicalRate = (room_rate && room_rate > 0) ? room_rate : (hotel.starting_rate as number);
+  const effectiveRate = (typeof proposed_rate === "number" && proposed_rate > 0)
+    ? proposed_rate : canonicalRate;
+  const totalCost = effectiveRate * nights;
+
+  const { data: booking, error: insertErr } = await supabaseAdmin
+    .from("hotel_bookings")
+    .insert({
+      user_id:       userId,
+      hotel_id:      hotel.id,
+      room_type:     room_type.trim(),
+      check_in,
+      check_out,
+      nights,
+      room_rate:     canonicalRate,
+      proposed_rate: (typeof proposed_rate === "number" && proposed_rate > 0) ? proposed_rate : null,
+      total_cost:    totalCost,
+      status:        "pending_approval",
+    })
+    .select()
+    .single();
+
+  if (insertErr || !booking) {
+    req.log.error({ insertErr }, "Failed to insert hotel booking");
+    res.status(500).json({ error: "Failed to create booking" });
+    return;
+  }
+
+  req.log.info({ userId, hotelId: hotel_id, nights }, "Hotel booking request created");
+  res.status(201).json({
+    booking: {
+      id:              booking.id              as string,
+      user_id:         booking.user_id         as string,
+      hotel_id:        booking.hotel_id        as string,
+      hotel_name:      hotel.name              as string,
+      hotel_image_url: (hotel.cover_image_url  as string | null) ?? "",
+      room_type:       booking.room_type       as string,
+      check_in:        booking.check_in        as string,
+      check_out:       booking.check_out       as string,
+      nights:          booking.nights          as number,
+      room_rate:       booking.room_rate       as number,
+      proposed_rate:   booking.proposed_rate   as number | null,
+      total_cost:      booking.total_cost      as number,
+      status:          booking.status          as string,
+      admin_note:      booking.admin_note      as string | null,
+      created_at:      booking.created_at      as string,
+    },
+  });
+});
+
+// ── GET /api/otc/hotel/bookings/:userId ────────────────────────────────────────
+router.get("/hotel/bookings/:userId", async (req, res) => {
+  const { userId } = req.params;
+  const auth = requireAuth(req.headers.authorization);
+  if ("error" in auth) { res.status(auth.status).json({ error: auth.error }); return; }
+  if (auth.claims.sub !== userId) { res.status(403).json({ error: "Forbidden" }); return; }
+  if (!supabaseAdmin) { res.status(503).json({ error: "Supabase not configured" }); return; }
+
+  const { data, error } = await supabaseAdmin
+    .from("hotel_bookings")
+    .select("*, hotels(name, cover_image_url)")
+    .eq("user_id", userId)
+    .order("created_at", { ascending: false });
+
+  if (error) { res.status(500).json({ error: "Failed to fetch hotel bookings" }); return; }
+
+  const bookings = (data ?? []).map((row) => {
+    const h = row.hotels as { name: string; cover_image_url: string | null } | null;
+    return {
+      id:              row.id            as string,
+      user_id:         row.user_id       as string,
+      hotel_id:        row.hotel_id      as string,
+      hotel_name:      h?.name           ?? (row.hotel_id as string),
+      hotel_image_url: h?.cover_image_url ?? "",
+      room_type:       row.room_type     as string,
+      check_in:        row.check_in      as string,
+      check_out:       row.check_out     as string,
+      nights:          row.nights        as number,
+      room_rate:       row.room_rate     as number,
+      proposed_rate:   row.proposed_rate as number | null,
+      total_cost:      row.total_cost    as number,
+      status:          row.status        as string,
+      admin_note:      row.admin_note    as string | null,
+      created_at:      row.created_at    as string,
+    };
+  });
+  res.json({ bookings });
+});
+
+// ── PATCH /api/otc/hotel/request/:requestId/status ────────────────────────────
+router.patch("/hotel/request/:requestId/status", async (req, res) => {
+  const { requestId } = req.params;
+  const auth = requireAuth(req.headers.authorization);
+  if ("error" in auth) { res.status(auth.status).json({ error: auth.error }); return; }
+  if (!supabaseAdmin)  { res.status(503).json({ error: "Supabase not configured" }); return; }
+
+  const allowed = ["confirmed", "negotiating", "cancelled"];
+  const { status, admin_note } = req.body as { status?: string; admin_note?: string };
+  if (!status || !allowed.includes(status)) {
+    res.status(400).json({ error: `status must be one of: ${allowed.join(", ")}` });
+    return;
+  }
+
+  const { data: updated, error } = await supabaseAdmin
+    .from("hotel_bookings")
+    .update({ status, admin_note: admin_note ?? null, updated_at: new Date().toISOString() })
+    .eq("id", requestId)
+    .select()
+    .single();
+
+  if (error || !updated) { res.status(404).json({ error: "Hotel booking not found" }); return; }
+
+  req.log.info({ requestId, status, admin: auth.claims.sub }, "Hotel booking status updated");
+  res.json({ message: "Status updated", status, id: requestId });
+});
+
+// ── GET /api/otc/hotel/admin ───────────────────────────────────────────────────
+router.get("/hotel/admin", async (req, res) => {
+  const auth = requireAuth(req.headers.authorization);
+  if ("error" in auth) { res.status(auth.status).json({ error: auth.error }); return; }
+  if (!supabaseAdmin)  { res.status(503).json({ error: "Supabase not configured" }); return; }
+
+  const statusFilter = (req.query.status as string | undefined) ?? "pending_approval";
+
+  const { data, error } = await supabaseAdmin
+    .from("hotel_bookings")
+    .select("*, hotels(name, city, cover_image_url, stars)")
+    .eq("status", statusFilter)
+    .order("created_at", { ascending: false });
+
+  if (error) { res.status(500).json({ error: "Failed to fetch admin hotel requests" }); return; }
+
+  const requests = (data ?? []).map((row) => {
+    const h = row.hotels as { name: string; city: string; cover_image_url: string | null; stars: number } | null;
+    return {
+      id:              row.id            as string,
+      user_id:         row.user_id       as string,
+      hotel_id:        row.hotel_id      as string,
+      hotel_name:      h?.name           ?? row.hotel_id,
+      hotel_city:      h?.city           ?? "",
+      hotel_stars:     h?.stars          ?? 0,
+      hotel_image_url: h?.cover_image_url ?? "",
+      room_type:       row.room_type     as string,
+      check_in:        row.check_in      as string,
+      check_out:       row.check_out     as string,
+      nights:          row.nights        as number,
+      room_rate:       row.room_rate     as number,
+      proposed_rate:   row.proposed_rate as number | null,
+      total_cost:      row.total_cost    as number,
+      status:          row.status        as string,
+      admin_note:      row.admin_note    as string | null,
+      created_at:      row.created_at    as string,
+    };
+  });
+  res.json({ requests, total: requests.length });
+});
+
+// ══════════════════════════════════════════════════════════════════════════════
 // ── RENT-A-CAR MODULE ─────────────────────────────────────────────────────────
 // ══════════════════════════════════════════════════════════════════════════════
 
