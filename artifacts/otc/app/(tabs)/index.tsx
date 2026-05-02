@@ -57,8 +57,8 @@ const SERVICES: ServiceTile[] = [
     label: "Hotel",
     icon: "home",
     description: "Find the best stays",
-    color: "#8A8060",
-    available: false,
+    color: "#FFD700",
+    available: true,
   },
 ];
 
