@@ -179,31 +179,29 @@ export default function SovereignModeScreen() {
 
     const channelName = `otc:ride:${session.gridNode}`;
     let msgIndex = 0;
+    let interval: ReturnType<typeof setInterval> | null = null;
+    let realtime: Ably.Realtime | null = null;
 
     try {
-      const realtime = new Ably.Realtime({
-        key: ABLY_API_KEY,
-        autoConnect: true,
-      });
+      realtime = new Ably.Realtime({ key: ABLY_API_KEY, autoConnect: true });
       ablyRef.current = realtime;
+      const channel = realtime.channels.get(channelName);
+
+      channel.subscribe("driver-update", (msg) => {
+        const data = msg.data as { message?: string };
+        setLiveEvents((prev) => [
+          {
+            id: Date.now().toString(),
+            type: "driver_update",
+            message: data.message ?? "Driver position updated",
+            timestamp: Date.now(),
+          },
+          ...prev.slice(0, 9),
+        ]);
+      });
 
       realtime.connection.on("connected", () => {
         setAblyConnected(true);
-        const channel = realtime.channels.get(channelName);
-
-        channel.subscribe("driver-update", (msg) => {
-          const data = msg.data as { message?: string };
-          setLiveEvents((prev) => [
-            {
-              id: Date.now().toString(),
-              type: "driver_update",
-              message: data.message ?? "Driver position updated",
-              timestamp: Date.now(),
-            },
-            ...prev.slice(0, 9),
-          ]);
-        });
-
         const publishHeartbeat = () => {
           const message = DRIVER_MESSAGES[msgIndex % DRIVER_MESSAGES.length];
           msgIndex++;
@@ -216,14 +214,10 @@ export default function SovereignModeScreen() {
             })
             .catch(() => {});
         };
-
         publishHeartbeat();
-        const interval = setInterval(publishHeartbeat, 9000);
-
-        return () => {
-          clearInterval(interval);
-          channel.unsubscribe();
-        };
+        if (!interval) {
+          interval = setInterval(publishHeartbeat, 9000);
+        }
       });
 
       realtime.connection.on("failed", () => setAblyConnected(false));
@@ -233,7 +227,9 @@ export default function SovereignModeScreen() {
     }
 
     return () => {
-      ablyRef.current?.close();
+      if (interval) { clearInterval(interval); interval = null; }
+      realtime?.channels.get(channelName).unsubscribe();
+      realtime?.close();
       ablyRef.current = null;
       setAblyConnected(false);
     };
