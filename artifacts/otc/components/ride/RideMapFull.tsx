@@ -25,12 +25,14 @@ interface RideMapFullProps {
   pickup?: MapCoord | null;
   dropoff?: MapCoord | null;
   searching?: boolean;
+  carPosition?: MapCoord | null;
   style?: object;
 }
 
 function buildMapUrl(
   pickup: MapCoord | null | undefined,
   dropoff: MapCoord | null | undefined,
+  carPosition: MapCoord | null | undefined,
   w: number,
   h: number
 ): string | null {
@@ -59,19 +61,29 @@ function buildMapUrl(
     const encodedGeo = encodeURIComponent(geojson);
     const pickMarker = `pin-s+FFD700(${pickup.lng},${pickup.lat})`;
     const dropMarker = `pin-s+22C55E(${dropoff.lng},${dropoff.lat})`;
-    const overlay = `geojson(${encodedGeo}),${pickMarker},${dropMarker}`;
+    const carMarker  = carPosition
+      ? `,pin-s+ffffff(${carPosition.lng},${carPosition.lat})`
+      : "";
+    const overlay = `geojson(${encodedGeo}),${pickMarker},${dropMarker}${carMarker}`;
     return `${base}/${overlay}/auto/${pw}x${ph}@2x${qs}&padding=70,40,70,40`;
   }
 
   if (pickup) {
-    const marker = `pin-s+FFD700(${pickup.lng},${pickup.lat})`;
-    return `${base}/${marker}/${pickup.lng},${pickup.lat},13,0/${pw}x${ph}@2x${qs}`;
+    const marker  = `pin-s+FFD700(${pickup.lng},${pickup.lat})`;
+    const carMark = carPosition
+      ? `,pin-s+ffffff(${carPosition.lng},${carPosition.lat})`
+      : "";
+    const overlay = `${marker}${carMark}`;
+    const center  = carPosition
+      ? `${(pickup.lng + carPosition.lng) / 2},${(pickup.lat + carPosition.lat) / 2},12,0`
+      : `${pickup.lng},${pickup.lat},13,0`;
+    return `${base}/${overlay}/${center}/${pw}x${ph}@2x${qs}`;
   }
 
   return `${base}/67.0011,24.8607,11,0/${pw}x${ph}@2x${qs}`;
 }
 
-// Three concentric pulse rings around the pickup location
+// Three concentric pulse rings for searching state
 function PulseRings() {
   const ring1 = useRef(new Animated.Value(0)).current;
   const ring2 = useRef(new Animated.Value(0)).current;
@@ -96,38 +108,22 @@ function PulseRings() {
         ])
       );
     }
-
     const l1 = makeLoop(ring1, 0);
     const l2 = makeLoop(ring2, 500);
     const l3 = makeLoop(ring3, 1000);
-    l1.start();
-    l2.start();
-    l3.start();
-
-    return () => {
-      l1.stop();
-      l2.stop();
-      l3.stop();
-    };
+    l1.start(); l2.start(); l3.start();
+    return () => { l1.stop(); l2.stop(); l3.stop(); };
   }, [ring1, ring2, ring3]);
-
-  const rings = [
-    { anim: ring1, maxSize: 100 },
-    { anim: ring2, maxSize: 160 },
-    { anim: ring3, maxSize: 220 },
-  ];
 
   return (
     <View style={StyleSheet.absoluteFill} pointerEvents="none">
-      {rings.map(({ anim, maxSize }, i) => {
-        const size = anim.interpolate({
-          inputRange: [0, 1],
-          outputRange: [32, maxSize],
-        });
-        const opacity = anim.interpolate({
-          inputRange: [0, 0.3, 1],
-          outputRange: [0, 0.55, 0],
-        });
+      {[
+        { anim: ring1, maxSize: 100 },
+        { anim: ring2, maxSize: 160 },
+        { anim: ring3, maxSize: 220 },
+      ].map(({ anim, maxSize }, i) => {
+        const size    = anim.interpolate({ inputRange: [0, 1], outputRange: [32, maxSize] });
+        const opacity = anim.interpolate({ inputRange: [0, 0.3, 1], outputRange: [0, 0.55, 0] });
         return (
           <Animated.View
             key={i}
@@ -143,11 +139,7 @@ function PulseRings() {
           />
         );
       })}
-
-      {/* Gold centre dot */}
       <View style={styles.centreDot} />
-
-      {/* Label */}
       <View style={styles.searchLabel}>
         <Text style={styles.searchLabelText}>Finding your OTC Partner…</Text>
       </View>
@@ -159,6 +151,7 @@ export function RideMapFull({
   pickup,
   dropoff,
   searching = false,
+  carPosition,
   style,
 }: RideMapFullProps) {
   const mapW = SCREEN_W;
@@ -166,16 +159,19 @@ export function RideMapFull({
   const fadeAnim = useRef(new Animated.Value(0)).current;
 
   useEffect(() => {
-    const url = buildMapUrl(pickup, dropoff, mapW, MAP_H);
+    const url = buildMapUrl(pickup, dropoff, carPosition, mapW, MAP_H);
     fadeAnim.setValue(0);
     setMapUrl(url);
-  }, [pickup?.lat, pickup?.lng, dropoff?.lat, dropoff?.lng, mapW]);
+  }, [
+    pickup?.lat, pickup?.lng,
+    dropoff?.lat, dropoff?.lng,
+    carPosition?.lat, carPosition?.lng,
+    mapW,
+  ]);
 
   function onLoad() {
     Animated.timing(fadeAnim, {
-      toValue: 1,
-      duration: 450,
-      useNativeDriver: true,
+      toValue: 1, duration: 450, useNativeDriver: true,
     }).start();
   }
 
@@ -193,22 +189,10 @@ export function RideMapFull({
       ) : (
         <View style={styles.noMapGrid}>
           {Array.from({ length: 10 }).map((_, i) => (
-            <View
-              key={`h${i}`}
-              style={[
-                styles.gridLine,
-                { top: (i / 10) * MAP_H, left: 0, right: 0, height: 1 },
-              ]}
-            />
+            <View key={`h${i}`} style={[styles.gridLine, { top: (i / 10) * MAP_H, left: 0, right: 0, height: 1 }]} />
           ))}
           {Array.from({ length: 14 }).map((_, i) => (
-            <View
-              key={`v${i}`}
-              style={[
-                styles.gridLine,
-                { left: (i / 14) * mapW, top: 0, bottom: 0, width: 1 },
-              ]}
-            />
+            <View key={`v${i}`} style={[styles.gridLine, { left: (i / 14) * mapW, top: 0, bottom: 0, width: 1 }]} />
           ))}
         </View>
       )}
@@ -216,7 +200,6 @@ export function RideMapFull({
       <View style={styles.gradientTop} />
       <View style={styles.gradientBottom} />
 
-      {/* Searching pulse rings — shown instead of normal pins */}
       {searching ? (
         <PulseRings />
       ) : (
@@ -224,18 +207,13 @@ export function RideMapFull({
           {pickup && (
             <View style={[styles.pinBadge, styles.pinTop]}>
               <View style={[styles.pinDot, { backgroundColor: "#FFD700" }]} />
-              <Text style={styles.pinText} numberOfLines={1}>
-                {pickup.name ?? "Pickup"}
-              </Text>
+              <Text style={styles.pinText} numberOfLines={1}>{pickup.name ?? "Pickup"}</Text>
             </View>
           )}
-
           {dropoff && (
             <View style={[styles.pinBadge, styles.pinBottom]}>
               <View style={[styles.pinDot, { backgroundColor: "#22C55E" }]} />
-              <Text style={styles.pinText} numberOfLines={1}>
-                {dropoff.name ?? "Destination"}
-              </Text>
+              <Text style={styles.pinText} numberOfLines={1}>{dropoff.name ?? "Destination"}</Text>
             </View>
           )}
         </>
@@ -247,39 +225,13 @@ export function RideMapFull({
 }
 
 const styles = StyleSheet.create({
-  container: {
-    position: "relative",
-    overflow: "hidden",
-  },
-  base: {
-    ...StyleSheet.absoluteFillObject,
-    backgroundColor: "#060A06",
-  },
-  noMapGrid: {
-    ...StyleSheet.absoluteFillObject,
-  },
-  gridLine: {
-    position: "absolute",
-    backgroundColor: "rgba(255,215,0,0.04)",
-  },
-  gradientTop: {
-    position: "absolute",
-    top: 0,
-    left: 0,
-    right: 0,
-    height: 90,
-    backgroundColor: "rgba(0,0,0,0.55)",
-  },
-  gradientBottom: {
-    position: "absolute",
-    bottom: 0,
-    left: 0,
-    right: 0,
-    height: 90,
-    backgroundColor: "rgba(0,0,0,0.55)",
-  },
+  container: { position: "relative", overflow: "hidden" },
+  base: { ...StyleSheet.absoluteFillObject, backgroundColor: "#060A06" },
+  noMapGrid: { ...StyleSheet.absoluteFillObject },
+  gridLine: { position: "absolute", backgroundColor: "rgba(255,215,0,0.04)" },
+  gradientTop:    { position: "absolute", top: 0, left: 0, right: 0, height: 90, backgroundColor: "rgba(0,0,0,0.55)" },
+  gradientBottom: { position: "absolute", bottom: 0, left: 0, right: 0, height: 90, backgroundColor: "rgba(0,0,0,0.55)" },
 
-  // Pulse rings
   ring: {
     position: "absolute",
     alignSelf: "center",
@@ -336,20 +288,10 @@ const styles = StyleSheet.create({
     borderWidth: 1,
     borderColor: "rgba(255,215,0,0.15)",
   },
-  pinTop: { top: 16 },
+  pinTop:    { top: 16 },
   pinBottom: { bottom: 16 },
-  pinDot: {
-    width: 8,
-    height: 8,
-    borderRadius: 4,
-    flexShrink: 0,
-  },
-  pinText: {
-    fontSize: 12,
-    fontFamily: "Inter_500Medium",
-    color: "#fff",
-    flexShrink: 1,
-  },
+  pinDot: { width: 8, height: 8, borderRadius: 4, flexShrink: 0 },
+  pinText: { fontSize: 12, fontFamily: "Inter_500Medium", color: "#fff", flexShrink: 1 },
   attr: {
     position: "absolute",
     bottom: 4,

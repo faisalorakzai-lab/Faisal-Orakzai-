@@ -29,6 +29,7 @@ import { useAuth } from "@/contexts/AuthContext";
 import { useLocation } from "@/contexts/LocationContext";
 import { useRide, type RideClass } from "@/contexts/RideContext";
 import { supabase } from "@/lib/supabase";
+import { setActiveRide } from "@/lib/activeRideStore";
 import { useColors } from "@/hooks/useColors";
 
 const { height: SCREEN_H } = Dimensions.get("window");
@@ -361,8 +362,18 @@ export default function OtcRideScreen() {
   }
 
   function handleStartRide() {
+    if (!pickup || !dropoff || !driverInfo) return;
     Haptics.impactAsync(Haptics.ImpactFeedbackStyle.Medium);
-    router.push("/services/sovereign-mode");
+    setActiveRide({
+      rideId: rideId ?? `OTC-${Date.now()}`,
+      driver: driverInfo,
+      pickup,
+      dropoff,
+      rideTypeLabel: rideType.label,
+      totalFare: driverInfo.totalFare,
+      offeredPrice: parseInt(offeredPrice, 10) || suggestedPrice,
+    });
+    router.push("/services/ride-active");
   }
 
   function resetRide() {

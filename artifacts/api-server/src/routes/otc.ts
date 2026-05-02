@@ -180,6 +180,26 @@ router.post("/match-driver", async (req, res) => {
     "Driver assigned"
   );
 
+  // ── MVP auto-simulation: advance ride lifecycle ───────────────────────────
+  // 10 s → ongoing (driver picks up passenger)
+  // 30 s → completed
+  const adminRef = supabaseAdmin;
+  setTimeout(() => {
+    adminRef
+      .from("ride_requests")
+      .update({ status: "ongoing" })
+      .eq("id", ride_request_id)
+      .then(() => {
+        setTimeout(() => {
+          adminRef
+            .from("ride_requests")
+            .update({ status: "completed" })
+            .eq("id", ride_request_id)
+            .then(() => {});
+        }, 20_000);
+      });
+  }, 10_000);
+
   res.json({
     status: "assigned",
     driver: {
