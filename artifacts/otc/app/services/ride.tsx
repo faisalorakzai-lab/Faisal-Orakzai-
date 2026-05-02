@@ -138,7 +138,7 @@ export default function OtcRideScreen() {
         .from("ride_requests")
         .insert({
           id,
-          user_id: (authUser as any)?.id ?? null,
+          user_id: authUser?.id ?? null,
           pickup_name: pickup.name ?? "Unknown",
           pickup_lat: pickup.lat,
           pickup_lng: pickup.lng,

@@ -1,6 +1,6 @@
 import { MaterialCommunityIcons } from "@expo/vector-icons";
 import * as Haptics from "expo-haptics";
-import React, { useRef } from "react";
+import React, { ComponentProps, useRef } from "react";
 import {
   Animated,
   ScrollView,
@@ -13,11 +13,13 @@ import {
 import type { RideClass } from "@/contexts/RideContext";
 import { useColors } from "@/hooks/useColors";
 
+type McIconName = ComponentProps<typeof MaterialCommunityIcons>["name"];
+
 export interface OtcRideType {
   id: RideClass;
   label: string;
   subtitle: string;
-  icon: string;
+  icon: McIconName;
   tag: string;
   tagColor: string;
   multiplier: number;
@@ -86,7 +88,7 @@ export function OtcRideTypeSelector({
       }),
       Animated.timing(glows[i], {
         toValue: 0,
-        duration: 420,
+        duration: 500,
         useNativeDriver: true,
       }),
     ]).start();
@@ -109,94 +111,99 @@ export function OtcRideTypeSelector({
             onPress={() => handlePress(t, i)}
             activeOpacity={0.85}
           >
-            <Animated.View
-              style={[
-                styles.card,
-                {
-                  borderColor: active
-                    ? colors.gold
-                    : "rgba(255,215,0,0.12)",
-                  backgroundColor: active
-                    ? "rgba(255,215,0,0.07)"
-                    : "#111111",
-                  shadowColor: "#FFD700",
-                  shadowOffset: { width: 0, height: 0 },
-                  shadowOpacity: glows[i].interpolate({
-                    inputRange: [0, 1],
-                    outputRange: [active ? 0.22 : 0, 0.65],
-                  }) as any,
-                  shadowRadius: 14,
-                  elevation: active ? 6 : 2,
-                },
-              ]}
-            >
-              <View style={styles.topRow}>
-                <View
-                  style={[
-                    styles.iconBox,
-                    {
-                      backgroundColor: active
-                        ? "rgba(255,215,0,0.14)"
-                        : "rgba(255,215,0,0.05)",
-                    },
-                  ]}
-                >
-                  <MaterialCommunityIcons
-                    name={t.icon as any}
-                    size={28}
-                    color={active ? colors.gold : colors.mutedForeground}
-                  />
-                </View>
-                <View
-                  style={[
-                    styles.tag,
-                    {
-                      backgroundColor: `${t.tagColor}18`,
-                      borderColor: `${t.tagColor}40`,
-                    },
-                  ]}
-                >
-                  <Text style={[styles.tagText, { color: t.tagColor }]}>
-                    {t.tag}
-                  </Text>
-                </View>
-              </View>
-
-              <Text
+            <View style={styles.cardOuter}>
+              {/* Gold glow overlay — fades in on press via useNativeDriver */}
+              <Animated.View
                 style={[
-                  styles.name,
-                  { color: active ? colors.gold : colors.foreground },
+                  StyleSheet.absoluteFill,
+                  styles.glowOverlay,
+                  { opacity: glows[i] },
+                ]}
+                pointerEvents="none"
+              />
+
+              <View
+                style={[
+                  styles.card,
+                  {
+                    borderColor: active
+                      ? colors.gold
+                      : "rgba(255,215,0,0.12)",
+                    backgroundColor: active
+                      ? "rgba(255,215,0,0.07)"
+                      : "#111111",
+                    elevation: active ? 6 : 2,
+                  },
                 ]}
               >
-                {t.label}
-              </Text>
-              <Text style={[styles.sub, { color: colors.mutedForeground }]}>
-                {t.subtitle}
-              </Text>
-              <Text style={[styles.eta, { color: colors.mutedForeground }]}>
-                {t.eta}
-              </Text>
+                <View style={styles.topRow}>
+                  <View
+                    style={[
+                      styles.iconBox,
+                      {
+                        backgroundColor: active
+                          ? "rgba(255,215,0,0.14)"
+                          : "rgba(255,215,0,0.05)",
+                      },
+                    ]}
+                  >
+                    <MaterialCommunityIcons
+                      name={t.icon}
+                      size={28}
+                      color={active ? colors.gold : colors.mutedForeground}
+                    />
+                  </View>
+                  <View
+                    style={[
+                      styles.tag,
+                      {
+                        backgroundColor: `${t.tagColor}18`,
+                        borderColor: `${t.tagColor}40`,
+                      },
+                    ]}
+                  >
+                    <Text style={[styles.tagText, { color: t.tagColor }]}>
+                      {t.tag}
+                    </Text>
+                  </View>
+                </View>
 
-              {price !== null && (
                 <Text
                   style={[
-                    styles.price,
+                    styles.name,
                     { color: active ? colors.gold : colors.foreground },
                   ]}
                 >
-                  PKR {price.toLocaleString()}
+                  {t.label}
                 </Text>
-              )}
+                <Text style={[styles.sub, { color: colors.mutedForeground }]}>
+                  {t.subtitle}
+                </Text>
+                <Text style={[styles.eta, { color: colors.mutedForeground }]}>
+                  {t.eta}
+                </Text>
 
-              {active && (
-                <View
-                  style={[
-                    styles.selectedBar,
-                    { backgroundColor: colors.gold },
-                  ]}
-                />
-              )}
-            </Animated.View>
+                {price !== null && (
+                  <Text
+                    style={[
+                      styles.price,
+                      { color: active ? colors.gold : colors.foreground },
+                    ]}
+                  >
+                    PKR {price.toLocaleString()}
+                  </Text>
+                )}
+
+                {active && (
+                  <View
+                    style={[
+                      styles.selectedBar,
+                      { backgroundColor: colors.gold },
+                    ]}
+                  />
+                )}
+              </View>
+            </View>
           </TouchableOpacity>
         );
       })}
@@ -209,6 +216,15 @@ const styles = StyleSheet.create({
     gap: 12,
     paddingHorizontal: 2,
     paddingVertical: 4,
+  },
+  cardOuter: {
+    position: "relative",
+    borderRadius: 17,
+    overflow: "hidden",
+  },
+  glowOverlay: {
+    borderRadius: 17,
+    backgroundColor: "rgba(255,215,0,0.18)",
   },
   card: {
     width: 148,
