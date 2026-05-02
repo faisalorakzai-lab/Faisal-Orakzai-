@@ -144,17 +144,15 @@ export function WalletProvider({ children }: { children: React.ReactNode }) {
         ).catch(() => {});
       }
       if (supabase) {
-        supabase
-          .from("otc_wallet_data")
-          .upsert({
+        void Promise.resolve(
+          supabase.from("otc_wallet_data").upsert({
             user_id: user.id,
             balance: newBalance,
             transactions: newTxs,
             has_claimed_welcome: claimed,
             updated_at: new Date().toISOString(),
           })
-          .then(() => {})
-          .catch(() => {});
+        ).catch(() => {});
       }
     },
     [storageKey, user]

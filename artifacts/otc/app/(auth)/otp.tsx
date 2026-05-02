@@ -15,14 +15,12 @@ import {
 import { useSafeAreaInsets } from "react-native-safe-area-context";
 import { OTCLogo } from "@/components/OTCLogo";
 import { useAuth } from "@/contexts/AuthContext";
-import { useColors } from "@/hooks/useColors";
 
-const OTP_LENGTH = 4;
+const OTP_LENGTH = 6;
 
 export default function OTPScreen() {
-  const colors = useColors();
   const insets = useSafeAreaInsets();
-  const { pendingPhone, login } = useAuth();
+  const { pendingPhone, pendingCountry, login } = useAuth();
   const [otp, setOtp] = useState("");
   const [isLoading, setIsLoading] = useState(false);
   const [error, setError] = useState("");
@@ -52,9 +50,9 @@ export default function OTPScreen() {
     try {
       await login(pendingPhone, toVerify);
       Haptics.notificationAsync(Haptics.NotificationFeedbackType.Success);
-      router.replace("/(tabs)");
-    } catch (e: any) {
-      setError(e.message ?? "Verification failed");
+    } catch (e: unknown) {
+      const msg = e instanceof Error ? e.message : "Verification failed";
+      setError(msg);
       setOtp("");
       Haptics.notificationAsync(Haptics.NotificationFeedbackType.Error);
     } finally {
@@ -62,13 +60,14 @@ export default function OTPScreen() {
     }
   }
 
+  const dialCode = pendingCountry?.dialCode ?? "+92";
   const maskedPhone = pendingPhone
-    ? pendingPhone.slice(0, 4) + "-***-" + pendingPhone.slice(-4)
+    ? pendingPhone.slice(0, 3) + "****" + pendingPhone.slice(-3)
     : "your phone";
 
   return (
     <KeyboardAvoidingView
-      style={[styles.root, { backgroundColor: colors.background }]}
+      style={styles.root}
       behavior={Platform.OS === "ios" ? "padding" : "height"}
     >
       <View
@@ -76,7 +75,7 @@ export default function OTPScreen() {
           styles.container,
           {
             paddingTop: insets.top + (Platform.OS === "web" ? 67 : 60),
-            paddingBottom: insets.bottom + 34,
+            paddingBottom: insets.bottom + 40,
           },
         ]}
       >
@@ -90,50 +89,51 @@ export default function OTPScreen() {
             style={styles.backBtn}
             onPress={() => router.back()}
           >
-            <Feather name="arrow-left" size={20} color={colors.gold} />
+            <Feather name="arrow-left" size={20} color="#FFD700" />
           </TouchableOpacity>
 
-          <Text style={[styles.title, { color: colors.foreground }]}>
-            Verify OTP
-          </Text>
-          <Text style={[styles.subtitle, { color: colors.mutedForeground }]}>
-            Enter the 4-digit code sent to{"\n"}
-            <Text style={{ color: colors.foreground }}>{maskedPhone}</Text>
+          <Text style={styles.title}>Verify OTP</Text>
+          <Text style={styles.subtitle}>
+            Enter the 6-digit code sent to{"\n"}
+            <Text style={styles.phoneText}>
+              {dialCode} {maskedPhone}
+            </Text>
           </Text>
 
           <TouchableOpacity
-            activeOpacity={0.8}
+            activeOpacity={0.9}
             onPress={() => inputRef.current?.focus()}
           >
             <View style={styles.dotsRow}>
               {Array.from({ length: OTP_LENGTH }).map((_, i) => {
                 const filled = i < otp.length;
-                const active = i === otp.length;
+                const active = i === otp.length && !isLoading;
                 return (
                   <View
                     key={i}
                     style={[
                       styles.dot,
                       {
-                        borderColor: filled
-                          ? colors.gold
+                        borderColor: error
+                          ? "#EF4444"
+                          : filled
+                          ? "#FFD700"
                           : active
-                          ? colors.gold
-                          : colors.border,
+                          ? "rgba(255,215,0,0.5)"
+                          : "rgba(255,255,255,0.1)",
                         backgroundColor: filled
-                          ? "rgba(255,215,0,0.12)"
-                          : colors.input,
-                        borderRadius: colors.radius / 2,
+                          ? "rgba(255,215,0,0.08)"
+                          : "#0A0A0A",
                       },
                     ]}
                   >
                     <Text
                       style={[
                         styles.dotText,
-                        { color: filled ? colors.gold : "transparent" },
+                        { color: filled ? "#FFD700" : "transparent" },
                       ]}
                     >
-                      {filled ? otp[i] : "0"}
+                      {filled ? "•" : "0"}
                     </Text>
                   </View>
                 );
@@ -152,9 +152,7 @@ export default function OTPScreen() {
           />
 
           {error ? (
-            <Text style={[styles.errorText, { color: colors.destructive }]}>
-              {error}
-            </Text>
+            <Text style={styles.errorText}>{error}</Text>
           ) : null}
 
           <TouchableOpacity
@@ -162,16 +160,17 @@ export default function OTPScreen() {
               styles.btn,
               {
                 backgroundColor:
-                  otp.length === OTP_LENGTH ? colors.primary : colors.muted,
-                borderRadius: colors.radius,
+                  otp.length === OTP_LENGTH && !isLoading
+                    ? "#FFD700"
+                    : "#1A1A1A",
               },
             ]}
             onPress={() => handleVerify()}
-            activeOpacity={0.8}
+            activeOpacity={0.85}
             disabled={isLoading || otp.length < OTP_LENGTH}
           >
             {isLoading ? (
-              <ActivityIndicator color={colors.primaryForeground} />
+              <ActivityIndicator color="#000000" />
             ) : (
               <Text
                 style={[
@@ -179,8 +178,8 @@ export default function OTPScreen() {
                   {
                     color:
                       otp.length === OTP_LENGTH
-                        ? colors.primaryForeground
-                        : colors.mutedForeground,
+                        ? "#000000"
+                        : "rgba(255,255,255,0.2)",
                   },
                 ]}
               >
@@ -191,19 +190,20 @@ export default function OTPScreen() {
 
           <View style={styles.resendRow}>
             {countdown > 0 ? (
-              <Text style={[styles.resendText, { color: colors.mutedForeground }]}>
+              <Text style={styles.resendText}>
                 Resend in{" "}
-                <Text style={{ color: colors.gold }}>{countdown}s</Text>
+                <Text style={{ color: "#FFD700" }}>{countdown}s</Text>
               </Text>
             ) : (
               <TouchableOpacity
                 onPress={() => {
                   setCountdown(30);
                   setOtp("");
+                  setError("");
                   Haptics.impactAsync(Haptics.ImpactFeedbackStyle.Light);
                 }}
               >
-                <Text style={[styles.resendText, { color: colors.gold }]}>
+                <Text style={[styles.resendText, { color: "#FFD700" }]}>
                   Resend OTP
                 </Text>
               </TouchableOpacity>
@@ -218,54 +218,53 @@ export default function OTPScreen() {
 }
 
 const styles = StyleSheet.create({
-  root: { flex: 1 },
+  root: { flex: 1, backgroundColor: "#000000" },
   container: {
     flex: 1,
     paddingHorizontal: 24,
     justifyContent: "space-between",
   },
-  header: {
-    alignItems: "center",
-    gap: 8,
-  },
+  header: { alignItems: "center", gap: 8 },
   brand: {
     fontSize: 24,
     fontFamily: "Inter_700Bold",
     color: "#FFD700",
     marginTop: 12,
   },
-  backBtn: {
-    alignSelf: "flex-start",
-    padding: 4,
-    marginBottom: 8,
-  },
-  formSection: {
-    gap: 16,
-  },
+  backBtn: { alignSelf: "flex-start", padding: 4, marginBottom: 8 },
+  formSection: { gap: 18 },
   title: {
-    fontSize: 26,
+    fontSize: 28,
     fontFamily: "Inter_700Bold",
+    color: "#FFFFFF",
+    letterSpacing: 0.2,
   },
   subtitle: {
     fontSize: 15,
     fontFamily: "Inter_400Regular",
+    color: "rgba(255,255,255,0.4)",
     lineHeight: 22,
+  },
+  phoneText: {
+    color: "#FFFFFF",
+    fontFamily: "Inter_600SemiBold",
   },
   dotsRow: {
     flexDirection: "row",
-    justifyContent: "center",
-    gap: 12,
-    marginTop: 8,
+    justifyContent: "space-between",
+    gap: 8,
+    marginTop: 4,
   },
   dot: {
-    width: 64,
-    height: 72,
+    flex: 1,
+    height: 64,
     borderWidth: 1.5,
+    borderRadius: 10,
     alignItems: "center",
     justifyContent: "center",
   },
   dotText: {
-    fontSize: 28,
+    fontSize: 24,
     fontFamily: "Inter_700Bold",
   },
   hiddenInput: {
@@ -277,23 +276,21 @@ const styles = StyleSheet.create({
   errorText: {
     fontSize: 13,
     fontFamily: "Inter_400Regular",
+    color: "#EF4444",
     textAlign: "center",
+    marginTop: -6,
   },
   btn: {
     height: 56,
+    borderRadius: 12,
     alignItems: "center",
     justifyContent: "center",
-    marginTop: 8,
   },
-  btnText: {
-    fontSize: 16,
-    fontFamily: "Inter_600SemiBold",
-  },
-  resendRow: {
-    alignItems: "center",
-  },
+  btnText: { fontSize: 16, fontFamily: "Inter_600SemiBold" },
+  resendRow: { alignItems: "center" },
   resendText: {
     fontSize: 14,
     fontFamily: "Inter_400Regular",
+    color: "rgba(255,255,255,0.3)",
   },
 });

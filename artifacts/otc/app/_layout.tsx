@@ -24,18 +24,23 @@ SplashScreen.preventAutoHideAsync();
 const queryClient = new QueryClient();
 
 function AuthGate({ children }: { children: React.ReactNode }) {
-  const { isAuthenticated, isLoading } = useAuth();
+  const { isAuthenticated, isLoading, needsProfileSetup } = useAuth();
   const segments = useSegments();
 
   useEffect(() => {
     if (isLoading) return;
     const inAuthGroup = segments[0] === "(auth)";
+    const inProfileSetup =
+      segments[0] === "(auth)" && segments[1] === "profile-setup";
+
     if (!isAuthenticated && !inAuthGroup) {
       router.replace("/(auth)/login");
-    } else if (isAuthenticated && inAuthGroup) {
+    } else if (isAuthenticated && needsProfileSetup && !inProfileSetup) {
+      router.replace("/(auth)/profile-setup");
+    } else if (isAuthenticated && !needsProfileSetup && inAuthGroup) {
       router.replace("/(tabs)");
     }
-  }, [isAuthenticated, isLoading, segments]);
+  }, [isAuthenticated, isLoading, segments, needsProfileSetup]);
 
   return <>{children}</>;
 }

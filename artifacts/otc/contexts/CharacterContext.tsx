@@ -115,9 +115,8 @@ export function CharacterProvider({ children }: { children: React.ReactNode }) {
         AsyncStorage.setItem(storageKey, JSON.stringify(updated)).catch(() => {});
       }
       if (supabase) {
-        supabase
-          .from("otc_character_profiles")
-          .upsert({
+        void Promise.resolve(
+          supabase.from("otc_character_profiles").upsert({
             user_id: user.id,
             credits: updated.credits,
             tier: updated.tier,
@@ -127,8 +126,7 @@ export function CharacterProvider({ children }: { children: React.ReactNode }) {
             discount_rate: updated.discountRate,
             updated_at: new Date().toISOString(),
           })
-          .then(() => {})
-          .catch(() => {});
+        ).catch(() => {});
       }
     },
     [storageKey, user]

@@ -253,7 +253,7 @@ export default function SovereignModeScreen() {
           text: `⭐ ${r}`,
           onPress: () => finishRide(r),
         }))
-        .concat([{ text: "Cancel", style: "cancel" as const, onPress: () => {} }])
+        .concat([{ text: "Cancel", onPress: () => {} }])
     );
   }
 

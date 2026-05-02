@@ -59,7 +59,7 @@ Two products in one monorepo:
 
 ## OTC Super App Details
 
-- **Auth**: Phone + OTP (demo OTP: 1234). JWT stored in AsyncStorage.
+- **Auth**: Phone + OTP (demo OTP: 123456). JWT (header.payload.sig base64) stored in AsyncStorage.
 - **OTC Wallet**: OTC Coins currency. New users get 10 welcome coins. Synced to Supabase (`otc_wallet_data` table).
 - **Referral Engine**: Referrer earns 5 OTC Coins, new user earns 10 on signup.
 - **Service Grid**: Ride, Delivery, Rent-a-Car (active); Hotel (coming soon).
