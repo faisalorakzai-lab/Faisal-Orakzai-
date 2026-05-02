@@ -8,7 +8,13 @@ const SUPABASE_URL       = process.env.SUPABASE_URL        ?? "";
 const SUPABASE_SECRET_KEY = process.env.SUPABASE_SECRET_KEY ?? "";
 // SESSION_SECRET is a true server-held secret — never shipped to clients.
 // Tokens are HMAC-SHA256 signed with this secret and verified on every request.
-const SESSION_SECRET     = process.env.SESSION_SECRET       ?? "fallback_dev_only_secret_32chars!";
+// SESSION_SECRET must be set in the environment — never falls back to a default.
+// If unset, OTC auth routes are disabled and the server logs a fatal error.
+const SESSION_SECRET = process.env.SESSION_SECRET ?? "";
+if (!SESSION_SECRET) {
+  // Log immediately but don't crash the whole server — OTC routes return 503
+  console.error("[OTC] FATAL: SESSION_SECRET env var is not set. All OTC auth routes will reject requests.");
+}
 
 const supabaseAdmin =
   SUPABASE_URL && SUPABASE_SECRET_KEY
@@ -22,7 +28,9 @@ const supabaseAdmin =
 // Format: base64(header).base64(payload).base64(HMAC-SHA256 signature)
 // The HMAC is keyed with SESSION_SECRET — only the server can mint valid tokens.
 
-function mintOtcToken(sub: string, phone: string): string {
+function mintOtcToken(sub: string, phone: string): string | null {
+  // Refuse to issue tokens if the signing secret is not configured
+  if (!SESSION_SECRET) return null;
   const header  = Buffer.from(JSON.stringify({ alg: "HS256", typ: "JWT" })).toString("base64");
   const payload = Buffer.from(
     JSON.stringify({
@@ -40,7 +48,9 @@ function mintOtcToken(sub: string, phone: string): string {
 }
 
 // Returns {sub, exp} if the token is validly signed by SESSION_SECRET, else null.
+// Returns null immediately if SESSION_SECRET is unset — no tokens can be verified.
 function parseOtcToken(authHeader: string | undefined): { sub: string; exp: number } | null {
+  if (!SESSION_SECRET) return null;
   if (!authHeader?.startsWith("Bearer ")) return null;
   const token = authHeader.slice(7);
   const parts = token.split(".");
@@ -281,6 +291,11 @@ router.post("/auth/token", async (req, res) => {
   }
 
   const token = mintOtcToken(userId, phone.trim());
+  if (!token) {
+    // SESSION_SECRET was not set — reject before issuing any token
+    res.status(503).json({ error: "Auth service not configured — SESSION_SECRET missing on server" });
+    return;
+  }
 
   req.log.info({ userId }, "OTC session token issued");
   res.json({ token, user_id: userId, name: existingName, referral_code: referralCode });
