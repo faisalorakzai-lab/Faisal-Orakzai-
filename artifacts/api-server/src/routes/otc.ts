@@ -1,7 +1,48 @@
-import { Router } from "express";
+import { Router, Request, Response, NextFunction } from "express";
 import { createClient } from "@supabase/supabase-js";
 
 const router = Router();
+
+const PARSE_VOICE_RATE_MAP = new Map<string, { count: number; resetAt: number }>();
+const RATE_LIMIT = 20;
+const RATE_WINDOW_MS = 60_000;
+
+function requireOtcAuth(req: Request, res: Response, next: NextFunction): void {
+  const auth = req.headers.authorization ?? "";
+  if (!auth.startsWith("Bearer ")) {
+    res.status(401).json({ error: "Unauthorized" });
+    return;
+  }
+  const token = auth.slice(7);
+  const parts = token.split(".");
+  if (parts.length !== 3) {
+    res.status(401).json({ error: "Invalid token" });
+    return;
+  }
+  try {
+    const payload = JSON.parse(
+      Buffer.from(parts[1], "base64").toString("utf8")
+    ) as { sub?: string; exp?: number };
+    if (!payload.sub || !payload.exp || Date.now() / 1000 > payload.exp) {
+      res.status(401).json({ error: "Token expired or invalid" });
+      return;
+    }
+    const userId = payload.sub;
+    const now = Date.now();
+    const entry = PARSE_VOICE_RATE_MAP.get(userId);
+    if (!entry || now > entry.resetAt) {
+      PARSE_VOICE_RATE_MAP.set(userId, { count: 1, resetAt: now + RATE_WINDOW_MS });
+    } else if (entry.count >= RATE_LIMIT) {
+      res.status(429).json({ error: "Rate limit exceeded. Try again in a minute." });
+      return;
+    } else {
+      entry.count += 1;
+    }
+    next();
+  } catch {
+    res.status(401).json({ error: "Invalid token" });
+  }
+}
 
 const GEMINI_API_KEY = process.env.GEMINI_API_KEY ?? "";
 const SUPABASE_URL = process.env.SUPABASE_URL ?? "";
@@ -56,7 +97,7 @@ export async function ensureOtcTables(): Promise<void> {
   );
 */
 
-router.post("/parse-voice", async (req, res) => {
+router.post("/parse-voice", requireOtcAuth, async (req, res) => {
   const { command } = req.body as { command?: string };
   if (!command || typeof command !== "string") {
     res.status(400).json({ error: "command is required" });
