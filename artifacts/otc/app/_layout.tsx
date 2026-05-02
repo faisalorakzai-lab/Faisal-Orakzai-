@@ -19,6 +19,7 @@ import { AuthProvider, useAuth } from "@/contexts/AuthContext";
 import { CharacterProvider } from "@/contexts/CharacterContext";
 import { LocationProvider } from "@/contexts/LocationContext";
 import { ReferralProvider } from "@/contexts/ReferralContext";
+import { RentalProvider } from "@/contexts/RentalContext";
 import { RideProvider } from "@/contexts/RideContext";
 import { WalletProvider } from "@/contexts/WalletContext";
 
@@ -68,6 +69,10 @@ function RootLayoutNav() {
         name="services/[id]"
         options={{ presentation: "card", headerShown: false }}
       />
+      <Stack.Screen
+        name="services/rental-bookings"
+        options={{ presentation: "card", headerShown: false, animation: "slide_from_right" }}
+      />
     </Stack>
   );
 }
@@ -113,13 +118,15 @@ export default function RootLayout() {
                 <LocationProvider>
                   <WalletProvider>
                     <ReferralProvider>
-                      <CharacterProvider>
-                        <RideProvider>
-                          <AuthGate>
-                            <RootLayoutNav />
-                          </AuthGate>
-                        </RideProvider>
-                      </CharacterProvider>
+                      <RentalProvider>
+                        <CharacterProvider>
+                          <RideProvider>
+                            <AuthGate>
+                              <RootLayoutNav />
+                            </AuthGate>
+                          </RideProvider>
+                        </CharacterProvider>
+                      </RentalProvider>
                     </ReferralProvider>
                   </WalletProvider>
                 </LocationProvider>

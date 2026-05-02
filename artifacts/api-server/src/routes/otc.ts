@@ -736,4 +736,252 @@ router.post("/match-driver", async (req, res) => {
   });
 });
 
+// ══════════════════════════════════════════════════════════════════════════════
+// ── RENT-A-CAR MODULE ─────────────────────────────────────────────────────────
+// ══════════════════════════════════════════════════════════════════════════════
+
+// ── GET /api/otc/cars ─────────────────────────────────────────────────────────
+// Public endpoint — returns the full car fleet catalog sorted by sort_order.
+router.get("/cars", async (_req, res) => {
+  if (!supabaseAdmin) {
+    res.status(503).json({ error: "Supabase not configured" });
+    return;
+  }
+  const { data, error } = await supabaseAdmin
+    .from("cars")
+    .select("*")
+    .eq("available", true)
+    .order("sort_order", { ascending: true });
+
+  if (error) {
+    res.status(500).json({ error: "Failed to fetch cars" });
+    return;
+  }
+  const cars = (data ?? []).map((row) => ({
+    id:           row.id           as string,
+    name:         row.name         as string,
+    category:     row.category     as string,
+    fuel_type:    row.fuel_type    as string,
+    transmission: row.transmission as string,
+    seats:        row.seats        as number,
+    base_rate:    row.base_rate    as number,
+    image_url:    row.image_url    as string | null,
+    features:     (row.features    as string[]) ?? [],
+    available:    row.available    as boolean,
+  }));
+  res.json({ cars });
+});
+
+// ── POST /api/otc/rental/request ──────────────────────────────────────────────
+// Authenticated. Creates a new rental booking request (status: pending_approval).
+router.post("/rental/request", async (req, res) => {
+  const auth = requireAuth(req.headers.authorization);
+  if ("error" in auth) { res.status(auth.status).json({ error: auth.error }); return; }
+  if (!supabaseAdmin) { res.status(503).json({ error: "Supabase not configured" }); return; }
+
+  const userId = auth.claims.sub;
+  const {
+    car_id,
+    start_date,
+    end_date,
+    days,
+    proposed_rate,
+  } = req.body as {
+    car_id?: string;
+    start_date?: string;
+    end_date?: string;
+    days?: number;
+    proposed_rate?: number | null;
+  };
+
+  if (!car_id?.trim())    { res.status(400).json({ error: "car_id is required" });    return; }
+  if (!start_date?.trim()) { res.status(400).json({ error: "start_date is required" }); return; }
+  if (!end_date?.trim())   { res.status(400).json({ error: "end_date is required" });   return; }
+  if (!days || days < 1)   { res.status(400).json({ error: "days must be >= 1" });       return; }
+
+  // Fetch the car to get the canonical base_rate
+  const { data: car } = await supabaseAdmin
+    .from("cars")
+    .select("id, name, base_rate, image_url, available")
+    .eq("id", car_id.trim())
+    .maybeSingle();
+
+  if (!car) { res.status(404).json({ error: "Car not found" }); return; }
+  if (!car.available) { res.status(409).json({ error: "Car is currently unavailable" }); return; }
+
+  const baseRate    = car.base_rate    as number;
+  const effectiveRate = (typeof proposed_rate === "number" && proposed_rate > 0)
+    ? proposed_rate
+    : baseRate;
+  const totalCost = effectiveRate * days;
+
+  const { data: booking, error: insertErr } = await supabaseAdmin
+    .from("rental_requests")
+    .insert({
+      user_id:       userId,
+      car_id:        car.id,
+      start_date,
+      end_date,
+      days,
+      base_rate:     baseRate,
+      proposed_rate: (typeof proposed_rate === "number" && proposed_rate > 0) ? proposed_rate : null,
+      total_cost:    totalCost,
+      status:        "pending_approval",
+    })
+    .select()
+    .single();
+
+  if (insertErr || !booking) {
+    req.log.error({ insertErr }, "Failed to insert rental request");
+    res.status(500).json({ error: "Failed to create booking" });
+    return;
+  }
+
+  req.log.info({ userId, carId: car_id, days }, "Rental request created");
+  res.status(201).json({
+    booking: {
+      id:            booking.id            as string,
+      car_id:        booking.car_id        as string,
+      car_name:      car.name              as string,
+      car_image_url: (car.image_url        as string | null) ?? "",
+      start_date:    booking.start_date    as string,
+      end_date:      booking.end_date      as string,
+      days:          booking.days          as number,
+      base_rate:     booking.base_rate     as number,
+      proposed_rate: booking.proposed_rate as number | null,
+      total_cost:    booking.total_cost    as number,
+      status:        booking.status        as string,
+      admin_note:    booking.admin_note    as string | null,
+      created_at:    booking.created_at    as string,
+    },
+  });
+});
+
+// ── GET /api/otc/rental/bookings/:userId ──────────────────────────────────────
+// Authenticated. Returns the user's rental bookings, most recent first.
+router.get("/rental/bookings/:userId", async (req, res) => {
+  const { userId } = req.params;
+  const auth = requireAuth(req.headers.authorization);
+  if ("error" in auth) { res.status(auth.status).json({ error: auth.error }); return; }
+  if (auth.claims.sub !== userId) { res.status(403).json({ error: "Forbidden" }); return; }
+  if (!supabaseAdmin) { res.status(503).json({ error: "Supabase not configured" }); return; }
+
+  const { data, error } = await supabaseAdmin
+    .from("rental_requests")
+    .select("*, cars(name, image_url)")
+    .eq("user_id", userId)
+    .order("created_at", { ascending: false });
+
+  if (error) {
+    res.status(500).json({ error: "Failed to fetch bookings" });
+    return;
+  }
+
+  const bookings = (data ?? []).map((row) => {
+    const carRef = row.cars as { name: string; image_url: string | null } | null;
+    return {
+      id:            row.id            as string,
+      car_id:        row.car_id        as string,
+      car_name:      carRef?.name      ?? (row.car_id as string),
+      car_image_url: carRef?.image_url ?? "",
+      start_date:    row.start_date    as string,
+      end_date:      row.end_date      as string,
+      days:          row.days          as number,
+      base_rate:     row.base_rate     as number,
+      proposed_rate: row.proposed_rate as number | null,
+      total_cost:    row.total_cost    as number,
+      status:        row.status        as string,
+      admin_note:    row.admin_note    as string | null,
+      created_at:    row.created_at    as string,
+    };
+  });
+
+  res.json({ bookings });
+});
+
+// ── PATCH /api/otc/rental/request/:requestId/status ───────────────────────────
+// Admin-only: approve, negotiate, or cancel a rental request.
+// In production, add an admin role check. For now, any authenticated user can
+// call this (suitable for internal admin panel use behind a separate admin auth).
+router.patch("/rental/request/:requestId/status", async (req, res) => {
+  const { requestId } = req.params;
+  const auth = requireAuth(req.headers.authorization);
+  if ("error" in auth) { res.status(auth.status).json({ error: auth.error }); return; }
+  if (!supabaseAdmin) { res.status(503).json({ error: "Supabase not configured" }); return; }
+
+  const { status, admin_note } = req.body as {
+    status?: "confirmed" | "negotiating" | "cancelled";
+    admin_note?: string;
+  };
+  const allowed = ["confirmed", "negotiating", "cancelled"];
+  if (!status || !allowed.includes(status)) {
+    res.status(400).json({ error: `status must be one of: ${allowed.join(", ")}` });
+    return;
+  }
+
+  const { data: updated, error } = await supabaseAdmin
+    .from("rental_requests")
+    .update({
+      status,
+      admin_note: admin_note ?? null,
+      updated_at: new Date().toISOString(),
+    })
+    .eq("id", requestId)
+    .select()
+    .single();
+
+  if (error || !updated) {
+    res.status(404).json({ error: "Rental request not found" });
+    return;
+  }
+
+  req.log.info({ requestId, status, admin: auth.claims.sub }, "Rental request status updated");
+  res.json({ message: "Status updated", status, id: requestId });
+});
+
+// ── GET /api/otc/rental/admin ─────────────────────────────────────────────────
+// Admin view: all rental requests with car + user profile info, newest first.
+router.get("/rental/admin", async (req, res) => {
+  const auth = requireAuth(req.headers.authorization);
+  if ("error" in auth) { res.status(auth.status).json({ error: auth.error }); return; }
+  if (!supabaseAdmin) { res.status(503).json({ error: "Supabase not configured" }); return; }
+
+  const statusFilter = (req.query.status as string | undefined) ?? "pending_approval";
+
+  const { data, error } = await supabaseAdmin
+    .from("rental_requests")
+    .select("*, cars(name, category, image_url, base_rate)")
+    .eq("status", statusFilter)
+    .order("created_at", { ascending: false });
+
+  if (error) {
+    res.status(500).json({ error: "Failed to fetch admin requests" });
+    return;
+  }
+
+  const requests = (data ?? []).map((row) => {
+    const carRef = row.cars as { name: string; category: string; image_url: string | null; base_rate: number } | null;
+    return {
+      id:            row.id            as string,
+      user_id:       row.user_id       as string,
+      car_id:        row.car_id        as string,
+      car_name:      carRef?.name      ?? row.car_id,
+      car_category:  carRef?.category  ?? "",
+      car_image_url: carRef?.image_url ?? "",
+      car_base_rate: carRef?.base_rate ?? 0,
+      start_date:    row.start_date    as string,
+      end_date:      row.end_date      as string,
+      days:          row.days          as number,
+      base_rate:     row.base_rate     as number,
+      proposed_rate: row.proposed_rate as number | null,
+      total_cost:    row.total_cost    as number,
+      status:        row.status        as string,
+      admin_note:    row.admin_note    as string | null,
+      created_at:    row.created_at    as string,
+    };
+  });
+
+  res.json({ requests, total: requests.length });
+});
+
 export default router;
