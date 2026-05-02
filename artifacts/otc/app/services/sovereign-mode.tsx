@@ -1,6 +1,8 @@
 import { Feather } from "@expo/vector-icons";
 import * as Haptics from "expo-haptics";
 import { router } from "expo-router";
+import Constants from "expo-constants";
+import Ably from "ably";
 import React, { useEffect, useRef, useState } from "react";
 import {
   Alert,
@@ -22,7 +24,17 @@ import { useRide } from "@/contexts/RideContext";
 import { useWallet } from "@/contexts/WalletContext";
 import { useColors } from "@/hooks/useColors";
 
-const OTC_UPDATES = [
+const extra = (Constants.expoConfig?.extra ?? {}) as Record<string, string>;
+const ABLY_API_KEY: string = extra.ablyApiKey ?? "";
+
+interface LiveEvent {
+  id: string;
+  type: "driver_update" | "route_change" | "eta_update" | "grid_event";
+  message: string;
+  timestamp: number;
+}
+
+const STATIC_UPDATES = [
   {
     id: "1",
     category: "FLEET",
@@ -51,6 +63,15 @@ const OTC_UPDATES = [
     body: "Use OTC Coins at partner hotels, rental desks, and delivery hubs starting Q3.",
     time: "3h ago",
   },
+];
+
+const DRIVER_MESSAGES = [
+  "Driver confirmed pickup — en route",
+  "Route optimized via Sovereign Grid",
+  "ETA recalculated: 4 minutes remaining",
+  "Driver approaching destination zone",
+  "Grid node handoff: signal strong",
+  "Approaching dropoff — prepare to exit",
 ];
 
 function ElapsedTimer({ startedAt }: { startedAt: number }) {
@@ -109,6 +130,26 @@ function PulsingBar() {
   );
 }
 
+function LiveDot({ active }: { active: boolean }) {
+  const anim = useRef(new Animated.Value(1)).current;
+  useEffect(() => {
+    if (!active) return;
+    Animated.loop(
+      Animated.sequence([
+        Animated.timing(anim, { toValue: 0.3, duration: 700, useNativeDriver: true }),
+        Animated.timing(anim, { toValue: 1, duration: 700, useNativeDriver: true }),
+      ])
+    ).start();
+  }, [active, anim]);
+  if (!active) return null;
+  return (
+    <View style={styles.liveBadge}>
+      <Animated.View style={[styles.liveDot, { opacity: anim }]} />
+      <Text style={styles.liveText}>LIVE</Text>
+    </View>
+  );
+}
+
 export default function SovereignModeScreen() {
   const colors = useColors();
   const insets = useSafeAreaInsets();
@@ -117,8 +158,11 @@ export default function SovereignModeScreen() {
   const { addRide, profile } = useCharacter();
   const [activeTab, setActiveTab] = useState<"status" | "wallet" | "updates" | "proof">("status");
   const [completed, setCompleted] = useState(false);
+  const [liveEvents, setLiveEvents] = useState<LiveEvent[]>([]);
+  const [ablyConnected, setAblyConnected] = useState(false);
   const glowAnim = useRef(new Animated.Value(0)).current;
   const topPad = insets.top + (Platform.OS === "web" ? 67 : 0);
+  const ablyRef = useRef<Ably.Realtime | null>(null);
 
   useEffect(() => {
     Animated.loop(
@@ -130,6 +174,71 @@ export default function SovereignModeScreen() {
     Haptics.impactAsync(Haptics.ImpactFeedbackStyle.Heavy);
   }, [glowAnim]);
 
+  useEffect(() => {
+    if (!session || !ABLY_API_KEY) return;
+
+    const channelName = `otc:ride:${session.gridNode}`;
+    let msgIndex = 0;
+
+    try {
+      const realtime = new Ably.Realtime({
+        key: ABLY_API_KEY,
+        autoConnect: true,
+      });
+      ablyRef.current = realtime;
+
+      realtime.connection.on("connected", () => {
+        setAblyConnected(true);
+        const channel = realtime.channels.get(channelName);
+
+        channel.subscribe("driver-update", (msg) => {
+          const data = msg.data as { message?: string };
+          setLiveEvents((prev) => [
+            {
+              id: Date.now().toString(),
+              type: "driver_update",
+              message: data.message ?? "Driver position updated",
+              timestamp: Date.now(),
+            },
+            ...prev.slice(0, 9),
+          ]);
+        });
+
+        const publishHeartbeat = () => {
+          const message = DRIVER_MESSAGES[msgIndex % DRIVER_MESSAGES.length];
+          msgIndex++;
+          channel
+            .publish("driver-update", {
+              message,
+              lat: session.pickup.lat + (Math.random() - 0.5) * 0.015,
+              lng: session.pickup.lng + (Math.random() - 0.5) * 0.015,
+              gridNode: session.gridNode,
+            })
+            .catch(() => {});
+        };
+
+        publishHeartbeat();
+        const interval = setInterval(publishHeartbeat, 9000);
+
+        return () => {
+          clearInterval(interval);
+          channel.unsubscribe();
+        };
+      });
+
+      realtime.connection.on("failed", () => setAblyConnected(false));
+      realtime.connection.on("disconnected", () => setAblyConnected(false));
+    } catch {
+      setAblyConnected(false);
+    }
+
+    return () => {
+      ablyRef.current?.close();
+      ablyRef.current = null;
+      setAblyConnected(false);
+    };
+  }, [session]);
+
   if (!session) {
     router.replace("/(tabs)");
     return null;
@@ -139,14 +248,17 @@ export default function SovereignModeScreen() {
     Alert.alert(
       "End Ride",
       "Rate your experience",
-      [4.5, 5.0].map((r) => ({
-        text: `⭐ ${r}`,
-        onPress: () => finishRide(r),
-      })).concat([{ text: "Cancel", style: "cancel" as const, onPress: () => {} }])
+      [4.5, 5.0]
+        .map((r) => ({
+          text: `⭐ ${r}`,
+          onPress: () => finishRide(r),
+        }))
+        .concat([{ text: "Cancel", style: "cancel" as const, onPress: () => {} }])
     );
   }
 
   function finishRide(rating: number) {
+    ablyRef.current?.close();
     const done = completeRide();
     if (!done) return;
     addTransaction({
@@ -166,7 +278,8 @@ export default function SovereignModeScreen() {
     community: "#34D399",
   };
   const classColor = classColors[session.rideClass] ?? "#FFD700";
-  const classLabel = session.rideClass.charAt(0).toUpperCase() + session.rideClass.slice(1);
+  const classLabel =
+    session.rideClass.charAt(0).toUpperCase() + session.rideClass.slice(1);
 
   if (completed) {
     return (
@@ -184,7 +297,10 @@ export default function SovereignModeScreen() {
                 {
                   borderColor: glowAnim.interpolate({
                     inputRange: [0.3, 1],
-                    outputRange: ["rgba(34,197,94,0.2)", "rgba(34,197,94,0.6)"],
+                    outputRange: [
+                      "rgba(34,197,94,0.2)",
+                      "rgba(34,197,94,0.6)",
+                    ],
                   }),
                 },
               ]}
@@ -201,35 +317,55 @@ export default function SovereignModeScreen() {
 
           <GlassCard variant="gold" style={styles.summaryCard}>
             <View style={styles.summaryRow}>
-              <Text style={[styles.summaryKey, { color: colors.mutedForeground }]}>Fare Paid</Text>
+              <Text style={[styles.summaryKey, { color: colors.mutedForeground }]}>
+                Fare Paid
+              </Text>
               <Text style={[styles.summaryVal, { color: colors.foreground }]}>
                 PKR {session.finalPrice.toLocaleString()}
               </Text>
             </View>
             {session.discountApplied > 0 && (
               <View style={styles.summaryRow}>
-                <Text style={[styles.summaryKey, { color: "#22C55E" }]}>CC Discount</Text>
+                <Text style={[styles.summaryKey, { color: "#22C55E" }]}>
+                  CC Discount
+                </Text>
                 <Text style={[styles.summaryVal, { color: "#22C55E" }]}>
                   −PKR {session.discountApplied.toLocaleString()}
                 </Text>
               </View>
             )}
             <View style={styles.summaryRow}>
-              <Text style={[styles.summaryKey, { color: colors.mutedForeground }]}>OTC Coins Earned</Text>
+              <Text style={[styles.summaryKey, { color: colors.mutedForeground }]}>
+                OTC Coins Earned
+              </Text>
               <CoinBadge amount={session.coinsEarned} size="sm" showLabel />
             </View>
             <View style={styles.summaryRow}>
-              <Text style={[styles.summaryKey, { color: colors.mutedForeground }]}>Distance</Text>
+              <Text style={[styles.summaryKey, { color: colors.mutedForeground }]}>
+                Distance
+              </Text>
               <Text style={[styles.summaryVal, { color: colors.foreground }]}>
                 {session.distance} km
               </Text>
             </View>
             <View style={styles.summaryRow}>
-              <Text style={[styles.summaryKey, { color: colors.mutedForeground }]}>Character Credits</Text>
+              <Text style={[styles.summaryKey, { color: colors.mutedForeground }]}>
+                Character Credits
+              </Text>
               <Text style={[styles.summaryVal, { color: colors.gold }]}>
                 {profile.credits} CC · {profile.tier}
               </Text>
             </View>
+            {liveEvents.length > 0 && (
+              <View style={styles.summaryRow}>
+                <Text style={[styles.summaryKey, { color: colors.mutedForeground }]}>
+                  Live Updates
+                </Text>
+                <Text style={[styles.summaryVal, { color: classColor }]}>
+                  {liveEvents.length} events via Ably
+                </Text>
+              </View>
+            )}
           </GlassCard>
 
           <ProofOfRideCard
@@ -240,7 +376,10 @@ export default function SovereignModeScreen() {
           />
 
           <TouchableOpacity
-            style={[styles.doneBtn, { backgroundColor: colors.gold, borderRadius: colors.radius }]}
+            style={[
+              styles.doneBtn,
+              { backgroundColor: colors.gold, borderRadius: colors.radius },
+            ]}
             onPress={() => {
               cancelRide();
               router.replace("/(tabs)");
@@ -258,7 +397,6 @@ export default function SovereignModeScreen() {
 
   return (
     <View style={[styles.root, { backgroundColor: "#020402" }]}>
-      {/* Sovereign Mode Header */}
       <Animated.View
         style={[
           styles.sovereignHeader,
@@ -280,23 +418,31 @@ export default function SovereignModeScreen() {
               Sovereign Mode
             </Text>
           </View>
-          <ElapsedTimer startedAt={session.startedAt} />
+          <View style={styles.headerRight}>
+            <LiveDot active={ablyConnected} />
+            <ElapsedTimer startedAt={session.startedAt} />
+          </View>
         </View>
         <PulsingBar />
       </Animated.View>
 
-      {/* Ride Info Strip */}
       <View style={[styles.rideStrip, { backgroundColor: `${classColor}0A` }]}>
         <View style={styles.ripItem}>
           <Feather name="map-pin" size={12} color={colors.mutedForeground} />
-          <Text style={[styles.ripText, { color: colors.mutedForeground }]} numberOfLines={1}>
+          <Text
+            style={[styles.ripText, { color: colors.mutedForeground }]}
+            numberOfLines={1}
+          >
             {session.pickup.name}
           </Text>
         </View>
         <Feather name="arrow-right" size={14} color={classColor} />
         <View style={styles.ripItem}>
           <Feather name="map-pin" size={12} color={classColor} />
-          <Text style={[styles.ripText, { color: classColor }]} numberOfLines={1}>
+          <Text
+            style={[styles.ripText, { color: classColor }]}
+            numberOfLines={1}
+          >
             {session.dropoff.name}
           </Text>
         </View>
@@ -305,14 +451,16 @@ export default function SovereignModeScreen() {
         </Text>
       </View>
 
-      {/* Tabs */}
       <View style={styles.tabs}>
         {(["status", "wallet", "updates", "proof"] as const).map((tab) => (
           <TouchableOpacity
             key={tab}
             style={[
               styles.tab,
-              activeTab === tab && [styles.tabActive, { borderBottomColor: classColor }],
+              activeTab === tab && [
+                styles.tabActive,
+                { borderBottomColor: classColor },
+              ],
             ]}
             onPress={() => {
               setActiveTab(tab);
@@ -322,10 +470,15 @@ export default function SovereignModeScreen() {
             <Text
               style={[
                 styles.tabText,
-                { color: activeTab === tab ? classColor : colors.mutedForeground },
+                {
+                  color:
+                    activeTab === tab ? classColor : colors.mutedForeground,
+                },
               ]}
             >
-              {tab.charAt(0).toUpperCase() + tab.slice(1)}
+              {tab === "updates" && liveEvents.length > 0
+                ? `Updates (${liveEvents.length})`
+                : tab.charAt(0).toUpperCase() + tab.slice(1)}
             </Text>
           </TouchableOpacity>
         ))}
@@ -338,44 +491,83 @@ export default function SovereignModeScreen() {
         ]}
         showsVerticalScrollIndicator={false}
       >
-        {/* STATUS TAB */}
         {activeTab === "status" && (
           <View style={styles.tabSection}>
             <GlassCard variant="dark" style={styles.statusCard}>
               <View style={styles.statusRow}>
                 <View
-                  style={[styles.statusDot, { backgroundColor: "#22C55E", shadowColor: "#22C55E" }]}
+                  style={[
+                    styles.statusDot,
+                    { backgroundColor: "#22C55E", shadowColor: "#22C55E" },
+                  ]}
                 />
                 <Text style={[styles.statusText, { color: "#22C55E" }]}>
                   Ride In Progress
                 </Text>
+                {ablyConnected && (
+                  <View style={styles.ablyBadge}>
+                    <Text style={styles.ablyBadgeText}>Ably Real-Time</Text>
+                  </View>
+                )}
               </View>
-              <View style={[styles.statusDivider, { backgroundColor: "rgba(255,215,0,0.08)" }]} />
+              <View
+                style={[
+                  styles.statusDivider,
+                  { backgroundColor: "rgba(255,215,0,0.08)" },
+                ]}
+              />
               <View style={styles.statusGrid}>
                 <View style={styles.statusCell}>
-                  <Text style={[styles.statusCellLabel, { color: colors.mutedForeground }]}>DRIVER</Text>
+                  <Text style={[styles.statusCellLabel, { color: colors.mutedForeground }]}>
+                    DRIVER
+                  </Text>
                   <Text style={[styles.statusCellVal, { color: colors.foreground }]}>
                     {session.driverName}
                   </Text>
                 </View>
                 <View style={styles.statusCell}>
-                  <Text style={[styles.statusCellLabel, { color: colors.mutedForeground }]}>RATING</Text>
+                  <Text style={[styles.statusCellLabel, { color: colors.mutedForeground }]}>
+                    RATING
+                  </Text>
                   <Text style={[styles.statusCellVal, { color: colors.gold }]}>
                     ⭐ {session.driverRating}
                   </Text>
                 </View>
                 <View style={styles.statusCell}>
-                  <Text style={[styles.statusCellLabel, { color: colors.mutedForeground }]}>CLASS</Text>
-                  <Text style={[styles.statusCellVal, { color: classColor }]}>{classLabel}</Text>
+                  <Text style={[styles.statusCellLabel, { color: colors.mutedForeground }]}>
+                    CLASS
+                  </Text>
+                  <Text style={[styles.statusCellVal, { color: classColor }]}>
+                    {classLabel}
+                  </Text>
                 </View>
                 <View style={styles.statusCell}>
-                  <Text style={[styles.statusCellLabel, { color: colors.mutedForeground }]}>GRID</Text>
+                  <Text style={[styles.statusCellLabel, { color: colors.mutedForeground }]}>
+                    GRID
+                  </Text>
                   <Text style={[styles.statusCellVal, { color: colors.foreground }]}>
                     {session.gridNode}
                   </Text>
                 </View>
               </View>
             </GlassCard>
+
+            {liveEvents.length > 0 && (
+              <GlassCard style={styles.liveCard}>
+                <View style={styles.liveCardHeader}>
+                  <View style={styles.liveDotSmall} />
+                  <Text style={[styles.liveCardTitle, { color: classColor }]}>
+                    Latest Update
+                  </Text>
+                </View>
+                <Text style={[styles.liveEventText, { color: colors.foreground }]}>
+                  {liveEvents[0].message}
+                </Text>
+                <Text style={[styles.liveEventTime, { color: colors.mutedForeground }]}>
+                  {new Date(liveEvents[0].timestamp).toLocaleTimeString()}
+                </Text>
+              </GlassCard>
+            )}
 
             <GlassCard style={styles.safetyCard}>
               <View style={styles.safetyHeader}>
@@ -402,14 +594,17 @@ export default function SovereignModeScreen() {
                   <Text style={[styles.safetyBtnText, { color: colors.foreground }]}>
                     {item.label}
                   </Text>
-                  <Feather name="chevron-right" size={14} color={colors.mutedForeground} />
+                  <Feather
+                    name="chevron-right"
+                    size={14}
+                    color={colors.mutedForeground}
+                  />
                 </TouchableOpacity>
               ))}
             </GlassCard>
           </View>
         )}
 
-        {/* WALLET TAB */}
         {activeTab === "wallet" && (
           <View style={styles.tabSection}>
             <GlassCard variant="gold" style={styles.walletCard}>
@@ -417,7 +612,12 @@ export default function SovereignModeScreen() {
                 SOVEREIGN WALLET
               </Text>
               <CoinBadge amount={balance} size="lg" showLabel />
-              <View style={[styles.walletDivider, { backgroundColor: "rgba(255,215,0,0.12)" }]} />
+              <View
+                style={[
+                  styles.walletDivider,
+                  { backgroundColor: "rgba(255,215,0,0.12)" },
+                ]}
+              />
               <View style={styles.walletEarnRow}>
                 <Feather name="star" size={14} color={colors.gold} />
                 <Text style={[styles.walletEarnText, { color: colors.foreground }]}>
@@ -439,26 +639,41 @@ export default function SovereignModeScreen() {
                   <Text style={[styles.charNum, { color: colors.gold }]}>
                     {profile.credits}
                   </Text>
-                  <Text style={[styles.charKey, { color: colors.mutedForeground }]}>Credits</Text>
+                  <Text style={[styles.charKey, { color: colors.mutedForeground }]}>
+                    Credits
+                  </Text>
                 </View>
                 <View style={styles.charItem}>
                   <Text style={[styles.charNum, { color: classColor }]}>
                     {profile.tier}
                   </Text>
-                  <Text style={[styles.charKey, { color: colors.mutedForeground }]}>Tier</Text>
+                  <Text style={[styles.charKey, { color: colors.mutedForeground }]}>
+                    Tier
+                  </Text>
                 </View>
                 <View style={styles.charItem}>
                   <Text style={[styles.charNum, { color: "#22C55E" }]}>
                     {profile.totalRides}
                   </Text>
-                  <Text style={[styles.charKey, { color: colors.mutedForeground }]}>Rides</Text>
+                  <Text style={[styles.charKey, { color: colors.mutedForeground }]}>
+                    Rides
+                  </Text>
                 </View>
               </View>
               {profile.discountRate > 0 && (
-                <View style={[styles.discountActive, { backgroundColor: "rgba(34,197,94,0.08)", borderRadius: 8 }]}>
+                <View
+                  style={[
+                    styles.discountActive,
+                    {
+                      backgroundColor: "rgba(34,197,94,0.08)",
+                      borderRadius: 8,
+                    },
+                  ]}
+                >
                   <Feather name="percent" size={14} color="#22C55E" />
                   <Text style={styles.discountActiveText}>
-                    {Math.round(profile.discountRate * 100)}% Character Discount active on all rides
+                    {Math.round(profile.discountRate * 100)}% Character Discount
+                    active on all rides
                   </Text>
                 </View>
               )}
@@ -466,29 +681,68 @@ export default function SovereignModeScreen() {
           </View>
         )}
 
-        {/* UPDATES TAB */}
         {activeTab === "updates" && (
           <View style={styles.tabSection}>
-            <Text style={[styles.updatesTitle, { color: colors.mutedForeground }]}>
+            {liveEvents.length > 0 && (
+              <>
+                <Text
+                  style={[styles.updatesTitle, { color: colors.mutedForeground }]}
+                >
+                  LIVE RIDE CHANNEL · ABLY
+                </Text>
+                {liveEvents.map((evt) => (
+                  <GlassCard key={evt.id} style={styles.liveEventCard}>
+                    <View style={styles.updateTop}>
+                      <View style={styles.liveBadgeSmall}>
+                        <View style={styles.liveDotSmall} />
+                        <Text style={styles.liveBadgeSmallText}>LIVE</Text>
+                      </View>
+                      <Text
+                        style={[
+                          styles.updateTime,
+                          { color: colors.mutedForeground },
+                        ]}
+                      >
+                        {new Date(evt.timestamp).toLocaleTimeString()}
+                      </Text>
+                    </View>
+                    <Text
+                      style={[styles.updateTitle, { color: colors.foreground }]}
+                    >
+                      {evt.message}
+                    </Text>
+                  </GlassCard>
+                ))}
+                <View
+                  style={[
+                    styles.dividerRow,
+                    { borderTopColor: "rgba(255,215,0,0.08)" },
+                  ]}
+                />
+              </>
+            )}
+
+            <Text
+              style={[styles.updatesTitle, { color: colors.mutedForeground }]}
+            >
               ORAKZAI GROUP LIVE FEED
             </Text>
-            {OTC_UPDATES.map((item) => (
+            {STATIC_UPDATES.map((item) => (
               <GlassCard key={item.id} style={styles.updateCard}>
                 <View style={styles.updateTop}>
                   <View
                     style={[
                       styles.updateCat,
-                      {
-                        backgroundColor: "rgba(255,215,0,0.08)",
-                        borderRadius: 4,
-                      },
+                      { backgroundColor: "rgba(255,215,0,0.08)", borderRadius: 4 },
                     ]}
                   >
                     <Text style={[styles.updateCatText, { color: colors.gold }]}>
                       {item.category}
                     </Text>
                   </View>
-                  <Text style={[styles.updateTime, { color: colors.mutedForeground }]}>
+                  <Text
+                    style={[styles.updateTime, { color: colors.mutedForeground }]}
+                  >
                     {item.time}
                   </Text>
                 </View>
@@ -503,7 +757,6 @@ export default function SovereignModeScreen() {
           </View>
         )}
 
-        {/* PROOF TAB */}
         {activeTab === "proof" && (
           <View style={styles.tabSection}>
             <ProofOfRideCard
@@ -518,16 +771,16 @@ export default function SovereignModeScreen() {
                 Proof of Ride Protocol™
               </Text>
               <Text style={[styles.protocolBody, { color: colors.mutedForeground }]}>
-                Every ride generates a unique immutable hash anchored to the Orakzai Sovereign Grid.
-                This certificate serves as cryptographic proof of your journey, driver assignment,
-                and coin issuance — creating trust at scale across the OTC ecosystem.
+                Every ride generates a unique immutable hash anchored to the
+                Orakzai Sovereign Grid. This certificate serves as cryptographic
+                proof of your journey, driver assignment, and coin issuance —
+                creating trust at scale across the OTC ecosystem.
               </Text>
             </GlassCard>
           </View>
         )}
       </ScrollView>
 
-      {/* End Ride Button */}
       <View
         style={[
           styles.endRideBar,
@@ -538,7 +791,10 @@ export default function SovereignModeScreen() {
         ]}
       >
         <TouchableOpacity
-          style={[styles.endRideBtn, { borderColor: colors.destructive, borderRadius: colors.radius }]}
+          style={[
+            styles.endRideBtn,
+            { borderColor: colors.destructive, borderRadius: colors.radius },
+          ]}
           onPress={handleEndRide}
           activeOpacity={0.85}
         >
@@ -568,7 +824,37 @@ const styles = StyleSheet.create({
   },
   sovereignLabel: { fontSize: 10, fontFamily: "Inter_700Bold", letterSpacing: 2 },
   sovereignTitle: { fontSize: 22, fontFamily: "Inter_700Bold" },
+  headerRight: { alignItems: "flex-end", gap: 4 },
   timerText: { fontSize: 32, fontFamily: "Inter_700Bold", letterSpacing: 2 },
+  liveBadge: {
+    flexDirection: "row",
+    alignItems: "center",
+    gap: 4,
+    backgroundColor: "rgba(34,197,94,0.1)",
+    borderRadius: 8,
+    paddingHorizontal: 8,
+    paddingVertical: 3,
+    borderWidth: 1,
+    borderColor: "rgba(34,197,94,0.3)",
+  },
+  liveDot: {
+    width: 6,
+    height: 6,
+    borderRadius: 3,
+    backgroundColor: "#22C55E",
+  },
+  liveDotSmall: {
+    width: 5,
+    height: 5,
+    borderRadius: 2.5,
+    backgroundColor: "#22C55E",
+  },
+  liveText: {
+    fontSize: 9,
+    fontFamily: "Inter_700Bold",
+    color: "#22C55E",
+    letterSpacing: 1,
+  },
   progressTrack: {
     flexDirection: "row",
     gap: 3,
@@ -599,7 +885,7 @@ const styles = StyleSheet.create({
     borderBottomColor: "transparent",
   },
   tabActive: {},
-  tabText: { fontSize: 13, fontFamily: "Inter_600SemiBold" },
+  tabText: { fontSize: 12, fontFamily: "Inter_600SemiBold" },
   tabContent: { paddingHorizontal: 16, paddingTop: 16, gap: 12 },
   tabSection: { gap: 12 },
   statusCard: { padding: 16, gap: 14 },
@@ -613,80 +899,148 @@ const styles = StyleSheet.create({
     shadowRadius: 4,
   },
   statusText: { fontSize: 14, fontFamily: "Inter_600SemiBold" },
+  ablyBadge: {
+    marginLeft: "auto",
+    backgroundColor: "rgba(34,197,94,0.08)",
+    borderRadius: 4,
+    paddingHorizontal: 6,
+    paddingVertical: 2,
+    borderWidth: 1,
+    borderColor: "rgba(34,197,94,0.2)",
+  },
+  ablyBadgeText: {
+    fontSize: 9,
+    fontFamily: "Inter_700Bold",
+    color: "#22C55E",
+    letterSpacing: 0.5,
+  },
   statusDivider: { height: 1 },
   statusGrid: { flexDirection: "row", flexWrap: "wrap", gap: 16 },
   statusCell: { width: "45%", gap: 4 },
-  statusCellLabel: { fontSize: 10, fontFamily: "Inter_700Bold", letterSpacing: 1 },
+  statusCellLabel: {
+    fontSize: 9,
+    fontFamily: "Inter_700Bold",
+    letterSpacing: 1,
+  },
   statusCellVal: { fontSize: 14, fontFamily: "Inter_600SemiBold" },
-  safetyCard: { padding: 16, gap: 12 },
+  liveCard: { padding: 14, gap: 6 },
+  liveCardHeader: { flexDirection: "row", alignItems: "center", gap: 6 },
+  liveCardTitle: { fontSize: 12, fontFamily: "Inter_700Bold", letterSpacing: 0.5 },
+  liveEventText: { fontSize: 14, fontFamily: "Inter_500Medium" },
+  liveEventTime: { fontSize: 11, fontFamily: "Inter_400Regular" },
+  safetyCard: { padding: 14, gap: 10 },
   safetyHeader: { flexDirection: "row", alignItems: "center", gap: 8 },
-  safetyTitle: { fontSize: 15, fontFamily: "Inter_600SemiBold" },
+  safetyTitle: { fontSize: 14, fontFamily: "Inter_600SemiBold" },
   safetyBtn: {
     flexDirection: "row",
     alignItems: "center",
+    gap: 10,
     paddingVertical: 12,
-    borderBottomWidth: 1,
-    gap: 12,
+    borderTopWidth: 1,
   },
   safetyBtnText: { flex: 1, fontSize: 14, fontFamily: "Inter_500Medium" },
-  walletCard: { padding: 20, gap: 12 },
-  walletLabel: { fontSize: 10, fontFamily: "Inter_700Bold", letterSpacing: 1.5 },
+  walletCard: { padding: 16, gap: 12 },
+  walletLabel: {
+    fontSize: 9,
+    fontFamily: "Inter_700Bold",
+    letterSpacing: 1.5,
+  },
   walletDivider: { height: 1 },
   walletEarnRow: { flexDirection: "row", alignItems: "center", gap: 8 },
-  walletEarnText: { fontSize: 13, fontFamily: "Inter_400Regular" },
-  charCard: { padding: 16, gap: 14 },
-  charTitle: { fontSize: 15, fontFamily: "Inter_600SemiBold" },
-  charRow: { flexDirection: "row", justifyContent: "space-around" },
-  charItem: { alignItems: "center", gap: 4 },
-  charNum: { fontSize: 22, fontFamily: "Inter_700Bold" },
+  walletEarnText: { fontSize: 13, fontFamily: "Inter_400Regular", flex: 1 },
+  charCard: { padding: 16, gap: 12 },
+  charTitle: { fontSize: 14, fontFamily: "Inter_600SemiBold" },
+  charRow: { flexDirection: "row", gap: 20 },
+  charItem: { gap: 3 },
+  charNum: { fontSize: 20, fontFamily: "Inter_700Bold" },
   charKey: { fontSize: 11, fontFamily: "Inter_400Regular" },
-  discountActive: { flexDirection: "row", alignItems: "center", gap: 8, padding: 10 },
-  discountActiveText: { fontSize: 12, fontFamily: "Inter_500Medium", color: "#22C55E", flex: 1 },
-  updatesTitle: { fontSize: 11, fontFamily: "Inter_700Bold", letterSpacing: 1.5, marginBottom: 4 },
+  discountActive: {
+    flexDirection: "row",
+    alignItems: "center",
+    gap: 8,
+    padding: 10,
+  },
+  discountActiveText: {
+    fontSize: 12,
+    fontFamily: "Inter_500Medium",
+    color: "#22C55E",
+    flex: 1,
+  },
+  updatesTitle: {
+    fontSize: 10,
+    fontFamily: "Inter_700Bold",
+    letterSpacing: 1.5,
+    marginBottom: 4,
+  },
+  dividerRow: { borderTopWidth: 1, paddingTop: 12 },
+  liveEventCard: { padding: 12, gap: 6 },
+  liveBadgeSmall: {
+    flexDirection: "row",
+    alignItems: "center",
+    gap: 4,
+  },
+  liveBadgeSmallText: {
+    fontSize: 9,
+    fontFamily: "Inter_700Bold",
+    color: "#22C55E",
+    letterSpacing: 1,
+  },
   updateCard: { padding: 14, gap: 8 },
-  updateTop: { flexDirection: "row", alignItems: "center", justifyContent: "space-between" },
-  updateCat: { paddingHorizontal: 6, paddingVertical: 2 },
-  updateCatText: { fontSize: 10, fontFamily: "Inter_700Bold", letterSpacing: 0.5 },
+  updateTop: {
+    flexDirection: "row",
+    alignItems: "center",
+    justifyContent: "space-between",
+  },
+  updateCat: { paddingHorizontal: 6, paddingVertical: 3 },
+  updateCatText: {
+    fontSize: 9,
+    fontFamily: "Inter_700Bold",
+    letterSpacing: 0.8,
+  },
   updateTime: { fontSize: 11, fontFamily: "Inter_400Regular" },
   updateTitle: { fontSize: 14, fontFamily: "Inter_600SemiBold" },
   updateBody: { fontSize: 12, fontFamily: "Inter_400Regular", lineHeight: 18 },
   protocolCard: { padding: 16, gap: 10 },
-  protocolTitle: { fontSize: 15, fontFamily: "Inter_600SemiBold" },
+  protocolTitle: { fontSize: 15, fontFamily: "Inter_700Bold" },
   protocolBody: { fontSize: 13, fontFamily: "Inter_400Regular", lineHeight: 20 },
-  completedBadge: { alignItems: "center", gap: 12, paddingVertical: 24 },
+  completedBadge: { alignItems: "center", gap: 12, marginBottom: 8 },
   checkRing: {
-    width: 90,
-    height: 90,
-    borderRadius: 45,
+    width: 80,
+    height: 80,
+    borderRadius: 40,
     borderWidth: 2,
     alignItems: "center",
     justifyContent: "center",
   },
-  completedTitle: { fontSize: 28, fontFamily: "Inter_700Bold" },
+  completedTitle: { fontSize: 24, fontFamily: "Inter_700Bold" },
   completedSub: { fontSize: 14, fontFamily: "Inter_400Regular" },
-  summaryCard: { padding: 18, gap: 12 },
-  summaryRow: { flexDirection: "row", justifyContent: "space-between", alignItems: "center" },
+  summaryCard: { padding: 16, gap: 12 },
+  summaryRow: {
+    flexDirection: "row",
+    justifyContent: "space-between",
+    alignItems: "center",
+  },
   summaryKey: { fontSize: 13, fontFamily: "Inter_400Regular" },
   summaryVal: { fontSize: 14, fontFamily: "Inter_600SemiBold" },
   doneBtn: {
-    height: 56,
+    height: 52,
     alignItems: "center",
     justifyContent: "center",
     marginTop: 8,
   },
-  doneBtnText: { fontSize: 16, fontFamily: "Inter_600SemiBold" },
+  doneBtnText: { fontSize: 16, fontFamily: "Inter_700Bold" },
   endRideBar: {
     paddingHorizontal: 20,
     paddingTop: 12,
     borderTopWidth: 1,
   },
   endRideBtn: {
-    height: 52,
     flexDirection: "row",
     alignItems: "center",
     justifyContent: "center",
-    gap: 10,
+    gap: 8,
+    height: 52,
     borderWidth: 1.5,
   },
-  endRideBtnText: { fontSize: 15, fontFamily: "Inter_600SemiBold" },
+  endRideBtnText: { fontSize: 16, fontFamily: "Inter_700Bold" },
 });

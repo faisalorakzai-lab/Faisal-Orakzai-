@@ -7,6 +7,7 @@ import React, {
   useState,
 } from "react";
 import { useAuth } from "./AuthContext";
+import { supabase } from "@/lib/supabase";
 
 export interface CharacterProfile {
   credits: number;
@@ -43,46 +44,95 @@ function creditToDiscount(credits: number): number {
   return 0;
 }
 
+const DEFAULT_PROFILE: CharacterProfile = {
+  credits: 12,
+  tier: "Pioneer",
+  totalRides: 0,
+  avgRating: 5.0,
+  equityPoints: 0,
+  discountRate: 0,
+};
+
 export function CharacterProvider({ children }: { children: React.ReactNode }) {
   const { user } = useAuth();
-  const [profile, setProfile] = useState<CharacterProfile>({
-    credits: 12,
-    tier: "Pioneer",
-    totalRides: 0,
-    avgRating: 5.0,
-    equityPoints: 0,
-    discountRate: 0,
-  });
+  const [profile, setProfile] = useState<CharacterProfile>(DEFAULT_PROFILE);
   const [isLoading, setIsLoading] = useState(true);
 
   const storageKey = user ? `${STORAGE_KEY}_${user.id}` : null;
 
   useEffect(() => {
-    if (!storageKey) {
+    if (!storageKey || !user) {
       setIsLoading(false);
       return;
     }
-    AsyncStorage.getItem(storageKey)
-      .then((data) => {
-        if (data) {
-          const parsed = JSON.parse(data);
-          setProfile(parsed);
-        } else {
-          const initial: CharacterProfile = {
-            credits: 12,
-            tier: "Pioneer",
-            totalRides: 0,
-            avgRating: 5.0,
-            equityPoints: 0,
-            discountRate: 0,
-          };
-          setProfile(initial);
-          AsyncStorage.setItem(storageKey, JSON.stringify(initial)).catch(() => {});
+
+    async function load() {
+      try {
+        if (supabase) {
+          const { data, error } = await supabase
+            .from("otc_character_profiles")
+            .select("*")
+            .eq("user_id", user!.id)
+            .maybeSingle();
+
+          if (!error && data) {
+            const p: CharacterProfile = {
+              credits: data.credits ?? DEFAULT_PROFILE.credits,
+              tier: (data.tier as CharacterProfile["tier"]) ?? DEFAULT_PROFILE.tier,
+              totalRides: data.total_rides ?? DEFAULT_PROFILE.totalRides,
+              avgRating: data.avg_rating ?? DEFAULT_PROFILE.avgRating,
+              equityPoints: data.equity_points ?? DEFAULT_PROFILE.equityPoints,
+              discountRate: data.discount_rate ?? DEFAULT_PROFILE.discountRate,
+            };
+            setProfile(p);
+            await AsyncStorage.setItem(storageKey!, JSON.stringify(p)).catch(() => {});
+            return;
+          }
         }
-      })
-      .catch(() => {})
-      .finally(() => setIsLoading(false));
-  }, [storageKey]);
+      } catch {
+      }
+
+      try {
+        const local = await AsyncStorage.getItem(storageKey!);
+        if (local) {
+          setProfile(JSON.parse(local));
+        } else {
+          setProfile(DEFAULT_PROFILE);
+          await AsyncStorage.setItem(storageKey!, JSON.stringify(DEFAULT_PROFILE)).catch(() => {});
+        }
+      } catch {
+        setProfile(DEFAULT_PROFILE);
+      }
+    }
+
+    load().finally(() => setIsLoading(false));
+  }, [storageKey, user]);
+
+  const persistProfile = useCallback(
+    async (updated: CharacterProfile) => {
+      if (!user) return;
+      if (storageKey) {
+        AsyncStorage.setItem(storageKey, JSON.stringify(updated)).catch(() => {});
+      }
+      if (supabase) {
+        supabase
+          .from("otc_character_profiles")
+          .upsert({
+            user_id: user.id,
+            credits: updated.credits,
+            tier: updated.tier,
+            total_rides: updated.totalRides,
+            avg_rating: updated.avgRating,
+            equity_points: updated.equityPoints,
+            discount_rate: updated.discountRate,
+            updated_at: new Date().toISOString(),
+          })
+          .then(() => {})
+          .catch(() => {});
+      }
+    },
+    [storageKey, user]
+  );
 
   const addRide = useCallback(
     (rating: number) => {
@@ -101,19 +151,15 @@ export function CharacterProvider({ children }: { children: React.ReactNode }) {
           equityPoints: newEquity,
           discountRate: creditToDiscount(newCredits),
         };
-        if (storageKey) {
-          AsyncStorage.setItem(storageKey, JSON.stringify(updated)).catch(() => {});
-        }
+        persistProfile(updated);
         return updated;
       });
     },
-    [storageKey]
+    [persistProfile]
   );
 
   const getPersonalizedPrice = useCallback(
-    (basePrice: number) => {
-      return Math.round(basePrice * (1 - profile.discountRate));
-    },
+    (basePrice: number) => Math.round(basePrice * (1 - profile.discountRate)),
     [profile.discountRate]
   );
 

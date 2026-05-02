@@ -19,13 +19,17 @@ const VOICE_SUGGESTIONS = [
   "Autonomous to PECHS Block 2",
 ];
 
-const DESTINATIONS: Record<string, string> = {
+const FALLBACK_DESTINATIONS: Record<string, string> = {
   "dha phase 2": "DHA Phase 2",
   "karachi airport": "Karachi Airport",
   "clifton block 5": "Clifton Block 5",
-  "saddar": "Saddar",
+  saddar: "Saddar",
   "dolmen mall": "Dolmen Mall",
   "pechs block 2": "PECHS Block 2",
+  "gulshan": "Gulshan-e-Iqbal",
+  "north nazimabad": "North Nazimabad",
+  korangi: "Korangi",
+  "bahria": "Bahria Town",
 };
 
 const CLASS_KEYWORDS: Record<string, string> = {
@@ -39,28 +43,46 @@ interface ParsedCommand {
   rideClass: "sovereign" | "autonomous" | "community" | null;
 }
 
-function parseVoiceCommand(cmd: string): ParsedCommand {
+function localParse(cmd: string): ParsedCommand {
   const lower = cmd.toLowerCase();
   let destination = "";
   let rideClass: ParsedCommand["rideClass"] = null;
-
-  for (const [key, val] of Object.entries(DESTINATIONS)) {
-    if (lower.includes(key)) {
-      destination = val;
-      break;
-    }
+  for (const [key, val] of Object.entries(FALLBACK_DESTINATIONS)) {
+    if (lower.includes(key)) { destination = val; break; }
   }
   for (const [key, val] of Object.entries(CLASS_KEYWORDS)) {
-    if (lower.includes(key)) {
-      rideClass = val as ParsedCommand["rideClass"];
-      break;
-    }
+    if (lower.includes(key)) { rideClass = val as ParsedCommand["rideClass"]; break; }
   }
   return { destination, rideClass };
 }
 
+const API_BASE = process.env.EXPO_PUBLIC_DOMAIN
+  ? `https://${process.env.EXPO_PUBLIC_DOMAIN}`
+  : "";
+
+async function geminiParse(command: string): Promise<ParsedCommand> {
+  if (!API_BASE) return localParse(command);
+  const res = await fetch(`${API_BASE}/api/otc/parse-voice`, {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ command }),
+  });
+  if (!res.ok) throw new Error("API error");
+  const data = (await res.json()) as {
+    destination?: string;
+    rideClass?: string | null;
+  };
+  return {
+    destination: data.destination ?? "",
+    rideClass: (data.rideClass as ParsedCommand["rideClass"]) ?? null,
+  };
+}
+
 interface VoiceCommandPanelProps {
-  onParsed: (destination: string, rideClass?: "sovereign" | "autonomous" | "community") => void;
+  onParsed: (
+    destination: string,
+    rideClass?: "sovereign" | "autonomous" | "community"
+  ) => void;
   onDismiss: () => void;
 }
 
@@ -69,7 +91,8 @@ export function VoiceCommandPanel({ onParsed, onDismiss }: VoiceCommandPanelProp
   const [active, setActive] = useState(false);
   const [transcript, setTranscript] = useState("");
   const [displayText, setDisplayText] = useState("");
-  const [phase, setPhase] = useState<"idle" | "listening" | "processing" | "done">("idle");
+  const [phase, setPhase] = useState<"idle" | "listening" | "processing" | "done" | "ai">("idle");
+  const [aiLabel, setAiLabel] = useState("");
   const pulseAnim = useRef(new Animated.Value(1)).current;
   const waveAnim1 = useRef(new Animated.Value(0.3)).current;
   const waveAnim2 = useRef(new Animated.Value(0.3)).current;
@@ -108,7 +131,7 @@ export function VoiceCommandPanel({ onParsed, onDismiss }: VoiceCommandPanelProp
     }
   }, [active, pulseAnim, waveAnim1, waveAnim2, waveAnim3]);
 
-  function simulateListening(command: string) {
+  async function processCommand(command: string) {
     setPhase("listening");
     setActive(true);
     setTranscript("");
@@ -116,48 +139,80 @@ export function VoiceCommandPanel({ onParsed, onDismiss }: VoiceCommandPanelProp
     Haptics.impactAsync(Haptics.ImpactFeedbackStyle.Medium);
 
     let i = 0;
-    function typeChar() {
-      if (i <= command.length) {
-        setDisplayText(command.slice(0, i));
-        i++;
-        typeTimeout.current = setTimeout(typeChar, 35 + Math.random() * 25);
-      } else {
-        setTimeout(() => {
-          setPhase("processing");
-          setActive(false);
-          setTimeout(() => {
-            const parsed = parseVoiceCommand(command);
-            setTranscript(command);
-            setPhase("done");
-            Haptics.notificationAsync(Haptics.NotificationFeedbackType.Success);
-            setTimeout(() => {
-              if (parsed.destination) {
-                onParsed(
-                  parsed.destination,
-                  parsed.rideClass ?? undefined
-                );
-              }
-            }, 800);
-          }, 600);
-        }, 400);
+    await new Promise<void>((resolve) => {
+      function typeChar() {
+        if (i <= command.length) {
+          setDisplayText(command.slice(0, i));
+          i++;
+          typeTimeout.current = setTimeout(typeChar, 30 + Math.random() * 20);
+        } else {
+          resolve();
+        }
       }
+      typeChar();
+    });
+
+    setActive(false);
+    setTranscript(command);
+
+    if (API_BASE) {
+      setPhase("ai");
+      setAiLabel("Gemini AI parsing...");
+    } else {
+      setPhase("processing");
     }
-    typeChar();
+
+    try {
+      const parsed = await geminiParse(command);
+      setPhase("done");
+      Haptics.notificationAsync(Haptics.NotificationFeedbackType.Success);
+      if (API_BASE && parsed.destination) {
+        setAiLabel(`AI: ${parsed.destination}${parsed.rideClass ? ` · ${parsed.rideClass}` : ""}`);
+      }
+      setTimeout(() => {
+        if (parsed.destination) {
+          onParsed(parsed.destination, parsed.rideClass ?? undefined);
+        }
+      }, 700);
+    } catch {
+      const fallback = localParse(command);
+      setPhase("done");
+      Haptics.notificationAsync(Haptics.NotificationFeedbackType.Success);
+      setTimeout(() => {
+        if (fallback.destination) {
+          onParsed(fallback.destination, fallback.rideClass ?? undefined);
+        }
+      }, 700);
+    }
   }
 
   function handleSuggestion(cmd: string) {
     if (typeTimeout.current) clearTimeout(typeTimeout.current);
-    simulateListening(cmd);
+    processCommand(cmd);
   }
 
   return (
-    <View style={[styles.panel, { backgroundColor: "rgba(5,5,5,0.97)", borderColor: colors.glassBorder, borderRadius: colors.radius }]}>
+    <View
+      style={[
+        styles.panel,
+        {
+          backgroundColor: "rgba(5,5,5,0.97)",
+          borderColor: colors.glassBorder,
+          borderRadius: colors.radius,
+        },
+      ]}
+    >
       <View style={styles.header}>
         <View style={styles.headerLeft}>
           <Feather name="mic" size={18} color={colors.gold} />
           <Text style={[styles.title, { color: colors.foreground }]}>
             Voice Command
           </Text>
+          {API_BASE ? (
+            <View style={styles.aiBadge}>
+              <Text style={styles.aiBadgeText}>AI</Text>
+            </View>
+          ) : null}
         </View>
         <TouchableOpacity onPress={onDismiss}>
           <Feather name="x" size={18} color={colors.mutedForeground} />
@@ -167,20 +222,84 @@ export function VoiceCommandPanel({ onParsed, onDismiss }: VoiceCommandPanelProp
       <View style={styles.micArea}>
         {active ? (
           <View style={styles.waveRow}>
-            <Animated.View style={[styles.bar, { height: waveAnim1.interpolate({ inputRange: [0.3, 1], outputRange: [10, 28] }), backgroundColor: colors.gold }]} />
-            <Animated.View style={[styles.bar, { height: waveAnim2.interpolate({ inputRange: [0.3, 1], outputRange: [14, 36] }), backgroundColor: colors.gold }]} />
-            <Animated.View style={[styles.bar, { height: waveAnim3.interpolate({ inputRange: [0.3, 1], outputRange: [10, 28] }), backgroundColor: colors.gold }]} />
-            <Animated.View style={[styles.bar, { height: waveAnim2.interpolate({ inputRange: [0.3, 1], outputRange: [8, 24] }), backgroundColor: colors.gold }]} />
-            <Animated.View style={[styles.bar, { height: waveAnim1.interpolate({ inputRange: [0.3, 1], outputRange: [12, 30] }), backgroundColor: colors.gold }]} />
+            <Animated.View
+              style={[
+                styles.bar,
+                {
+                  height: waveAnim1.interpolate({
+                    inputRange: [0.3, 1],
+                    outputRange: [10, 28],
+                  }),
+                  backgroundColor: colors.gold,
+                },
+              ]}
+            />
+            <Animated.View
+              style={[
+                styles.bar,
+                {
+                  height: waveAnim2.interpolate({
+                    inputRange: [0.3, 1],
+                    outputRange: [14, 36],
+                  }),
+                  backgroundColor: colors.gold,
+                },
+              ]}
+            />
+            <Animated.View
+              style={[
+                styles.bar,
+                {
+                  height: waveAnim3.interpolate({
+                    inputRange: [0.3, 1],
+                    outputRange: [10, 28],
+                  }),
+                  backgroundColor: colors.gold,
+                },
+              ]}
+            />
+            <Animated.View
+              style={[
+                styles.bar,
+                {
+                  height: waveAnim2.interpolate({
+                    inputRange: [0.3, 1],
+                    outputRange: [8, 24],
+                  }),
+                  backgroundColor: colors.gold,
+                },
+              ]}
+            />
+            <Animated.View
+              style={[
+                styles.bar,
+                {
+                  height: waveAnim1.interpolate({
+                    inputRange: [0.3, 1],
+                    outputRange: [12, 30],
+                  }),
+                  backgroundColor: colors.gold,
+                },
+              ]}
+            />
           </View>
         ) : phase === "processing" ? (
           <Text style={[styles.processing, { color: colors.mutedForeground }]}>
             Processing...
           </Text>
+        ) : phase === "ai" ? (
+          <View style={styles.aiRow}>
+            <View style={styles.aiSpinner} />
+            <Text style={[styles.processing, { color: colors.gold }]}>
+              {aiLabel}
+            </Text>
+          </View>
         ) : phase === "done" ? (
           <View style={styles.doneRow}>
             <Feather name="check-circle" size={20} color="#22C55E" />
-            <Text style={[styles.doneText, { color: "#22C55E" }]}>Command Recognized</Text>
+            <Text style={[styles.doneText, { color: "#22C55E" }]}>
+              {API_BASE ? "Gemini Recognized" : "Command Recognized"}
+            </Text>
           </View>
         ) : (
           <Text style={[styles.idle, { color: colors.mutedForeground }]}>
@@ -188,7 +307,7 @@ export function VoiceCommandPanel({ onParsed, onDismiss }: VoiceCommandPanelProp
           </Text>
         )}
 
-        {(displayText || transcript) ? (
+        {displayText || transcript ? (
           <Text style={[styles.transcript, { color: colors.foreground }]}>
             "{displayText || transcript}"
           </Text>
@@ -202,12 +321,17 @@ export function VoiceCommandPanel({ onParsed, onDismiss }: VoiceCommandPanelProp
         {VOICE_SUGGESTIONS.map((cmd, i) => (
           <TouchableOpacity
             key={i}
-            style={[styles.chip, { borderColor: colors.glassBorder, borderRadius: 20 }]}
+            style={[
+              styles.chip,
+              { borderColor: colors.glassBorder, borderRadius: 20 },
+            ]}
             onPress={() => handleSuggestion(cmd)}
             activeOpacity={0.7}
           >
             <Feather name="mic" size={12} color={colors.gold} />
-            <Text style={[styles.chipText, { color: colors.foreground }]}>{cmd}</Text>
+            <Text style={[styles.chipText, { color: colors.foreground }]}>
+              {cmd}
+            </Text>
           </TouchableOpacity>
         ))}
       </View>
@@ -216,11 +340,7 @@ export function VoiceCommandPanel({ onParsed, onDismiss }: VoiceCommandPanelProp
 }
 
 const styles = StyleSheet.create({
-  panel: {
-    borderWidth: 1,
-    padding: 16,
-    gap: 14,
-  },
+  panel: { borderWidth: 1, padding: 16, gap: 14 },
   header: {
     flexDirection: "row",
     alignItems: "center",
@@ -228,6 +348,20 @@ const styles = StyleSheet.create({
   },
   headerLeft: { flexDirection: "row", alignItems: "center", gap: 8 },
   title: { fontSize: 15, fontFamily: "Inter_600SemiBold" },
+  aiBadge: {
+    backgroundColor: "rgba(255,215,0,0.12)",
+    borderRadius: 4,
+    paddingHorizontal: 6,
+    paddingVertical: 2,
+    borderWidth: 1,
+    borderColor: "rgba(255,215,0,0.3)",
+  },
+  aiBadgeText: {
+    fontSize: 9,
+    fontFamily: "Inter_700Bold",
+    color: "#FFD700",
+    letterSpacing: 0.5,
+  },
   micArea: {
     alignItems: "center",
     justifyContent: "center",
@@ -240,11 +374,17 @@ const styles = StyleSheet.create({
     gap: 4,
     height: 40,
   },
-  bar: {
-    width: 4,
-    borderRadius: 2,
-  },
+  bar: { width: 4, borderRadius: 2 },
   processing: { fontSize: 13, fontFamily: "Inter_400Regular" },
+  aiRow: { flexDirection: "row", alignItems: "center", gap: 8 },
+  aiSpinner: {
+    width: 12,
+    height: 12,
+    borderRadius: 6,
+    borderWidth: 2,
+    borderColor: "#FFD700",
+    borderTopColor: "transparent",
+  },
   doneRow: { flexDirection: "row", alignItems: "center", gap: 8 },
   doneText: { fontSize: 14, fontFamily: "Inter_600SemiBold" },
   idle: { fontSize: 13, fontFamily: "Inter_400Regular" },
@@ -261,11 +401,7 @@ const styles = StyleSheet.create({
     letterSpacing: 0.5,
     textTransform: "uppercase",
   },
-  suggestions: {
-    flexDirection: "row",
-    flexWrap: "wrap",
-    gap: 8,
-  },
+  suggestions: { flexDirection: "row", flexWrap: "wrap", gap: 8 },
   chip: {
     flexDirection: "row",
     alignItems: "center",

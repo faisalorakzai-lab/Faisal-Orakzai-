@@ -4,9 +4,11 @@ import React, {
   useCallback,
   useContext,
   useEffect,
+  useRef,
   useState,
 } from "react";
 import { useAuth } from "./AuthContext";
+import { supabase } from "@/lib/supabase";
 
 export interface Transaction {
   id: string;
@@ -14,7 +16,14 @@ export interface Transaction {
   amount: number;
   description: string;
   timestamp: number;
-  category: "referral" | "welcome" | "ride" | "delivery" | "rental" | "hotel" | "topup";
+  category:
+    | "referral"
+    | "welcome"
+    | "ride"
+    | "delivery"
+    | "rental"
+    | "hotel"
+    | "topup";
 }
 
 interface WalletContextValue {
@@ -38,21 +47,54 @@ export function WalletProvider({ children }: { children: React.ReactNode }) {
   const [isLoading, setIsLoading] = useState(true);
   const [hasClaimedWelcome, setHasClaimedWelcome] = useState(false);
   const [usedReferrals, setUsedReferrals] = useState<string[]>([]);
+  const balanceRef = useRef(balance);
+  balanceRef.current = balance;
 
   const storageKey = user ? `${STORAGE_KEY}_${user.id}` : null;
   const referralsStorageKey = user ? `${REFERRALS_KEY}_${user.id}` : null;
 
   useEffect(() => {
-    if (!storageKey || !referralsStorageKey) {
+    if (!storageKey || !user) {
       setIsLoading(false);
       return;
     }
+
     async function load() {
+      try {
+        if (supabase) {
+          const { data, error } = await supabase
+            .from("otc_wallet_data")
+            .select("*")
+            .eq("user_id", user!.id)
+            .maybeSingle();
+
+          if (!error && data) {
+            const txs: Transaction[] = Array.isArray(data.transactions)
+              ? data.transactions
+              : [];
+            setBalance(data.balance ?? 0);
+            setTransactions(txs);
+            setHasClaimedWelcome(data.has_claimed_welcome ?? false);
+            await AsyncStorage.setItem(
+              storageKey!,
+              JSON.stringify({
+                balance: data.balance,
+                transactions: txs,
+                hasClaimedWelcome: data.has_claimed_welcome,
+              })
+            ).catch(() => {});
+            return;
+          }
+        }
+      } catch {
+      }
+
       try {
         const [walletData, referralsData] = await Promise.all([
           AsyncStorage.getItem(storageKey!),
           AsyncStorage.getItem(referralsStorageKey!),
         ]);
+
         if (walletData) {
           const parsed = JSON.parse(walletData);
           setBalance(parsed.balance ?? 0);
@@ -82,44 +124,61 @@ export function WalletProvider({ children }: { children: React.ReactNode }) {
           setUsedReferrals(JSON.parse(referralsData));
         }
       } catch {
-      } finally {
-        setIsLoading(false);
       }
     }
-    load();
-  }, [storageKey, referralsStorageKey]);
 
-  const persist = useCallback(
-    async (newBalance: number, newTxs: Transaction[]) => {
-      if (!storageKey) return;
-      await AsyncStorage.setItem(
-        storageKey,
-        JSON.stringify({ balance: newBalance, transactions: newTxs, hasClaimedWelcome: true })
-      );
+    load().finally(() => setIsLoading(false));
+  }, [storageKey, referralsStorageKey, user]);
+
+  const persistWallet = useCallback(
+    async (newBalance: number, newTxs: Transaction[], claimed: boolean) => {
+      if (!user) return;
+      if (storageKey) {
+        AsyncStorage.setItem(
+          storageKey,
+          JSON.stringify({
+            balance: newBalance,
+            transactions: newTxs,
+            hasClaimedWelcome: claimed,
+          })
+        ).catch(() => {});
+      }
+      if (supabase) {
+        supabase
+          .from("otc_wallet_data")
+          .upsert({
+            user_id: user.id,
+            balance: newBalance,
+            transactions: newTxs,
+            has_claimed_welcome: claimed,
+            updated_at: new Date().toISOString(),
+          })
+          .then(() => {})
+          .catch(() => {});
+      }
     },
-    [storageKey]
+    [storageKey, user]
   );
 
   const addTransaction = useCallback(
     (tx: Omit<Transaction, "id" | "timestamp">) => {
       const fullTx: Transaction = {
         ...tx,
-        id:
-          Date.now().toString() + Math.random().toString(36).substring(2, 7),
+        id: Date.now().toString() + Math.random().toString(36).substring(2, 7),
         timestamp: Date.now(),
       };
       setTransactions((prev) => {
         const updated = [fullTx, ...prev];
         const newBalance =
           tx.type === "credit"
-            ? balance + tx.amount
-            : Math.max(0, balance - tx.amount);
+            ? balanceRef.current + tx.amount
+            : Math.max(0, balanceRef.current - tx.amount);
         setBalance(newBalance);
-        persist(newBalance, updated);
+        persistWallet(newBalance, updated, true);
         return updated;
       });
     },
-    [balance, persist]
+    [persistWallet]
   );
 
   const claimReferral = useCallback(
@@ -128,14 +187,16 @@ export function WalletProvider({ children }: { children: React.ReactNode }) {
       if (usedReferrals.includes(referralCode)) return false;
       if (user && referralCode === user.referralCode) return false;
 
-      const referrerBonus = 5;
       const updatedReferrals = [...usedReferrals, referralCode];
       setUsedReferrals(updatedReferrals);
-      AsyncStorage.setItem(referralsStorageKey, JSON.stringify(updatedReferrals)).catch(() => {});
+      AsyncStorage.setItem(
+        referralsStorageKey,
+        JSON.stringify(updatedReferrals)
+      ).catch(() => {});
 
       addTransaction({
         type: "credit",
-        amount: referrerBonus,
+        amount: 5,
         description: "Referral bonus applied",
         category: "referral",
       });

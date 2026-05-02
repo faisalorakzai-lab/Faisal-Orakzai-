@@ -1,7 +1,9 @@
+import Constants from "expo-constants";
 import React, { useEffect, useRef } from "react";
 import {
   Animated,
   Dimensions,
+  Image,
   StyleSheet,
   Text,
   View,
@@ -9,6 +11,21 @@ import {
 
 const { width } = Dimensions.get("window");
 const MAP_H = 260;
+const MAP_W = width - 48;
+
+const extra = (Constants.expoConfig?.extra ?? {}) as Record<string, string>;
+const MAPBOX_TOKEN: string = extra.mapboxToken ?? "";
+
+function buildMapboxUrl(w: number, h: number): string | null {
+  if (!MAPBOX_TOKEN) return null;
+  const pw = Math.min(Math.round(w), 1280);
+  const ph = Math.min(Math.round(h), 1280);
+  return (
+    `https://api.mapbox.com/styles/v1/mapbox/dark-v11/static/` +
+    `67.0011,24.8607,11,0/${pw}x${ph}@2x` +
+    `?access_token=${MAPBOX_TOKEN}&logo=false&attribution=false`
+  );
+}
 
 interface Hotspot {
   x: number;
@@ -26,9 +43,6 @@ const HOTSPOTS: Hotspot[] = [
   { x: 0.15, y: 0.7, intensity: 0.4, label: "Korangi" },
   { x: 0.85, y: 0.3, intensity: 0.6, label: "North Nzb" },
 ];
-
-const GRID_LINES_H = 8;
-const GRID_LINES_V = 12;
 
 function PulsingDot({
   x,
@@ -80,7 +94,7 @@ function PulsingDot({
 
   const dotSize = 6 + intensity * 8;
   const maxScale = 2.5 + intensity * 1.5;
-  const left = x * (width - 48) - dotSize / 2;
+  const left = x * MAP_W - dotSize / 2;
   const top = y * MAP_H - dotSize / 2;
 
   return (
@@ -140,7 +154,7 @@ function PulsingDot({
               position: "absolute",
               top: dotSize * 0.5 + 2,
               fontSize: 8,
-              color: "rgba(255,215,0,0.6)",
+              color: "rgba(255,215,0,0.7)",
               fontFamily: "Inter_500Medium",
               letterSpacing: 0.3,
               width: 50,
@@ -156,18 +170,21 @@ function PulsingDot({
   );
 }
 
-interface MoverDot {
-  x: Animated.Value;
-  y: Animated.Value;
-}
-
-function MovingVehicle({ startX, startY, color }: { startX: number; startY: number; color: string }) {
-  const x = useRef(new Animated.Value(startX * (width - 48))).current;
+function MovingVehicle({
+  startX,
+  startY,
+  color,
+}: {
+  startX: number;
+  startY: number;
+  color: string;
+}) {
+  const x = useRef(new Animated.Value(startX * MAP_W)).current;
   const y = useRef(new Animated.Value(startY * MAP_H)).current;
 
   useEffect(() => {
     function randomMove() {
-      const tx = Math.random() * (width - 48);
+      const tx = Math.random() * MAP_W;
       const ty = Math.random() * MAP_H;
       Animated.parallel([
         Animated.timing(x, {
@@ -189,15 +206,15 @@ function MovingVehicle({ startX, startY, color }: { startX: number; startY: numb
     <Animated.View
       style={{
         position: "absolute",
-        width: 6,
-        height: 6,
-        borderRadius: 3,
+        width: 7,
+        height: 7,
+        borderRadius: 3.5,
         backgroundColor: color,
         transform: [{ translateX: x }, { translateY: y }],
         shadowColor: color,
         shadowOffset: { width: 0, height: 0 },
-        shadowOpacity: 0.8,
-        shadowRadius: 3,
+        shadowOpacity: 0.9,
+        shadowRadius: 4,
       }}
     />
   );
@@ -206,67 +223,81 @@ function MovingVehicle({ startX, startY, color }: { startX: number; startY: numb
 interface SovereignMapProps {
   pickupLabel?: string;
   dropoffLabel?: string;
+  driverLat?: number;
+  driverLng?: number;
 }
 
-export function SovereignMap({ pickupLabel, dropoffLabel }: SovereignMapProps) {
-  const tilt = useRef(new Animated.Value(0)).current;
-
-  useEffect(() => {
-    Animated.loop(
-      Animated.sequence([
-        Animated.timing(tilt, { toValue: 1, duration: 6000, useNativeDriver: true }),
-        Animated.timing(tilt, { toValue: 0, duration: 6000, useNativeDriver: true }),
-      ])
-    ).start();
-  }, [tilt]);
+export function SovereignMap({
+  pickupLabel,
+  dropoffLabel,
+}: SovereignMapProps) {
+  const mapboxUrl = buildMapboxUrl(MAP_W, MAP_H);
 
   return (
     <View style={styles.container}>
       <View style={styles.mapWrapper}>
         <View style={styles.map}>
+          {/* Real Mapbox satellite/dark base map */}
+          {mapboxUrl ? (
+            <Image
+              source={{ uri: mapboxUrl }}
+              style={StyleSheet.absoluteFill}
+              resizeMode="cover"
+            />
+          ) : null}
+
+          {/* Dark overlay to unify with app theme */}
+          <View style={styles.darkOverlay} />
+
           {/* Grid lines */}
-          {Array.from({ length: GRID_LINES_H }).map((_, i) => (
+          {Array.from({ length: 8 }).map((_, i) => (
             <View
               key={`h${i}`}
-              style={[
-                styles.gridH,
-                { top: (i / GRID_LINES_H) * MAP_H },
-              ]}
+              style={[styles.gridH, { top: (i / 8) * MAP_H }]}
             />
           ))}
-          {Array.from({ length: GRID_LINES_V }).map((_, i) => (
+          {Array.from({ length: 12 }).map((_, i) => (
             <View
               key={`v${i}`}
-              style={[
-                styles.gridV,
-                { left: (i / GRID_LINES_V) * (width - 48) },
-              ]}
+              style={[styles.gridV, { left: (i / 12) * MAP_W }]}
             />
           ))}
 
-          {/* Road-like shapes */}
+          {/* Road highlights */}
           <View style={[styles.road, { top: MAP_H * 0.3, left: 0, right: 0, height: 2 }]} />
           <View style={[styles.road, { top: MAP_H * 0.55, left: 0, right: 0, height: 1.5 }]} />
-          <View style={[styles.road, { left: (width - 48) * 0.4, top: 0, bottom: 0, width: 1.5 }]} />
-          <View style={[styles.road, { left: (width - 48) * 0.65, top: 0, bottom: 0, width: 1 }]} />
+          <View style={[styles.road, { left: MAP_W * 0.4, top: 0, bottom: 0, width: 1.5 }]} />
+          <View style={[styles.road, { left: MAP_W * 0.65, top: 0, bottom: 0, width: 1 }]} />
 
-          {/* Moving vehicles */}
+          {/* Moving sovereign vehicles */}
           <MovingVehicle startX={0.1} startY={0.3} color="#FFD700" />
           <MovingVehicle startX={0.6} startY={0.5} color="#FFD700" />
           <MovingVehicle startX={0.8} startY={0.2} color="rgba(255,215,0,0.5)" />
           <MovingVehicle startX={0.35} startY={0.7} color="rgba(255,243,163,0.7)" />
           <MovingVehicle startX={0.5} startY={0.1} color="#FFD700" />
 
-          {/* Hotspots */}
+          {/* Hotspot demand rings */}
           {HOTSPOTS.map((h, i) => (
             <PulsingDot key={i} {...h} delay={i * 300} />
           ))}
 
           {/* User location pin */}
-          <View style={[styles.userPin, { left: (width - 48) * 0.42 - 6, top: MAP_H * 0.45 - 6 }]}>
+          <View
+            style={[
+              styles.userPin,
+              { left: MAP_W * 0.42 - 6, top: MAP_H * 0.45 - 6 },
+            ]}
+          >
             <View style={styles.userPinInner} />
             <View style={styles.userPinRing} />
           </View>
+
+          {/* Mapbox attribution (required by ToS) */}
+          {mapboxUrl ? (
+            <View style={styles.attribution}>
+              <Text style={styles.attributionText}>© Mapbox © OSM</Text>
+            </View>
+          ) : null}
         </View>
       </View>
 
@@ -277,9 +308,17 @@ export function SovereignMap({ pickupLabel, dropoffLabel }: SovereignMapProps) {
           <Text style={styles.legendText}>High Demand</Text>
         </View>
         <View style={styles.legendItem}>
-          <View style={[styles.legendDot, { backgroundColor: "#FFD700", opacity: 0.4 }]} />
+          <View
+            style={[styles.legendDot, { backgroundColor: "#FFD700", opacity: 0.4 }]}
+          />
           <Text style={styles.legendText}>Sovereign Grid</Text>
         </View>
+        {mapboxUrl ? (
+          <View style={styles.legendItem}>
+            <View style={[styles.legendDot, { backgroundColor: "#22C55E" }]} />
+            <Text style={styles.legendText}>Live Map</Text>
+          </View>
+        ) : null}
         {pickupLabel && (
           <View style={styles.legendItem}>
             <View style={[styles.legendDot, { backgroundColor: "#22C55E" }]} />
@@ -297,7 +336,7 @@ const styles = StyleSheet.create({
     borderRadius: 16,
     overflow: "hidden",
     borderWidth: 1,
-    borderColor: "rgba(255,215,0,0.15)",
+    borderColor: "rgba(255,215,0,0.2)",
   },
   map: {
     height: MAP_H,
@@ -305,23 +344,27 @@ const styles = StyleSheet.create({
     overflow: "hidden",
     position: "relative",
   },
+  darkOverlay: {
+    ...StyleSheet.absoluteFillObject,
+    backgroundColor: "rgba(5,5,5,0.55)",
+  },
   gridH: {
     position: "absolute",
     left: 0,
     right: 0,
     height: 1,
-    backgroundColor: "rgba(255,215,0,0.04)",
+    backgroundColor: "rgba(255,215,0,0.05)",
   },
   gridV: {
     position: "absolute",
     top: 0,
     bottom: 0,
     width: 1,
-    backgroundColor: "rgba(255,215,0,0.04)",
+    backgroundColor: "rgba(255,215,0,0.05)",
   },
   road: {
     position: "absolute",
-    backgroundColor: "rgba(255,215,0,0.08)",
+    backgroundColor: "rgba(255,215,0,0.12)",
   },
   userPin: {
     position: "absolute",
@@ -343,13 +386,24 @@ const styles = StyleSheet.create({
     height: 20,
     borderRadius: 10,
     borderWidth: 1.5,
-    borderColor: "rgba(255,215,0,0.4)",
+    borderColor: "rgba(255,215,0,0.5)",
+  },
+  attribution: {
+    position: "absolute",
+    bottom: 4,
+    right: 6,
+  },
+  attributionText: {
+    fontSize: 8,
+    color: "rgba(255,255,255,0.4)",
+    fontFamily: "Inter_400Regular",
   },
   legend: {
     flexDirection: "row",
     gap: 16,
     paddingHorizontal: 4,
     paddingTop: 8,
+    flexWrap: "wrap",
   },
   legendItem: {
     flexDirection: "row",
