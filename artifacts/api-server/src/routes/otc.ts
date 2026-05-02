@@ -26,9 +26,9 @@ export async function ensureOtcTables(): Promise<void> {
 
 // Fare rates per km for each ride type
 const RATES_PER_KM: Record<string, number> = {
-  community: 30,   // OTC Bike
-  autonomous: 60,  // OTC Prime
-  sovereign: 120,  // OTC Lux
+  community:  30,   // OTC Bike
+  autonomous: 60,   // OTC Prime
+  sovereign:  120,  // OTC Lux
 };
 
 // Haversine distance in km
@@ -47,11 +47,97 @@ function haversineKm(
   return R * 2 * Math.atan2(Math.sqrt(a), Math.sqrt(1 - a));
 }
 
+// ── Settlement helper ────────────────────────────────────────────────────────
+// Called when ride status transitions to "completed".
+// Records a transaction ledger entry. If wallet payment, deducts from profile.
+async function settleRide(
+  adminRef: NonNullable<typeof supabaseAdmin>,
+  rideId: string
+): Promise<void> {
+  // Fetch the completed ride record
+  const { data: ride, error: rideErr } = await adminRef
+    .from("ride_requests")
+    .select("user_id, total_fare, payment_method")
+    .eq("id", rideId)
+    .single();
+
+  if (rideErr || !ride) return;
+
+  const userId:        string = (ride.user_id as string | null) ?? "";
+  const fare:          number = (ride.total_fare as number | null) ?? 0;
+  const paymentMethod: string = (ride.payment_method as string | null) ?? "cash";
+
+  if (!userId || fare <= 0) return;
+
+  if (paymentMethod === "wallet") {
+    // Fetch current wallet balance from profiles
+    const { data: profile, error: profileErr } = await adminRef
+      .from("profiles")
+      .select("wallet_balance")
+      .eq("user_id", userId)
+      .single();
+
+    if (!profileErr && profile) {
+      const currentBalance = (profile.wallet_balance as number | null) ?? 0;
+      const newBalance = Math.max(0, currentBalance - fare);
+
+      await adminRef
+        .from("profiles")
+        .update({ wallet_balance: newBalance })
+        .eq("user_id", userId);
+    }
+
+    // Insert wallet debit transaction
+    await adminRef.from("transactions").insert({
+      user_id:        userId,
+      ride_id:        rideId,
+      amount:         fare,
+      type:           "debit",
+      payment_method: "wallet",
+      description:    `Ride fare deducted — ${rideId}`,
+    });
+  } else {
+    // Insert cash transaction record
+    await adminRef.from("transactions").insert({
+      user_id:        userId,
+      ride_id:        rideId,
+      amount:         fare,
+      type:           "debit",
+      payment_method: "cash",
+      description:    `Cash paid on arrival — ${rideId}`,
+    });
+  }
+}
+
+// ── GET /api/otc/health ──────────────────────────────────────────────────────
 router.get("/health", (_req, res) => {
   res.json({ supabase: supabaseAdmin !== null });
 });
 
-// POST /api/otc/match-driver
+// ── GET /api/otc/wallet-balance/:userId ──────────────────────────────────────
+router.get("/wallet-balance/:userId", async (req, res) => {
+  const { userId } = req.params;
+
+  if (!supabaseAdmin) {
+    res.status(503).json({ error: "Supabase not configured" });
+    return;
+  }
+
+  const { data, error } = await supabaseAdmin
+    .from("profiles")
+    .select("wallet_balance")
+    .eq("user_id", userId)
+    .single();
+
+  if (error || !data) {
+    res.json({ wallet_balance: 0 });
+    return;
+  }
+
+  res.json({ wallet_balance: (data.wallet_balance as number | null) ?? 0 });
+});
+
+// ── POST /api/otc/match-driver ───────────────────────────────────────────────
 // Finds nearest available driver, calculates fare, assigns to ride_request
 router.post("/match-driver", async (req, res) => {
   const {
@@ -60,12 +146,14 @@ router.post("/match-driver", async (req, res) => {
     pickup_lng,
     ride_type,
     distance_km,
+    payment_method,
   } = req.body as {
     ride_request_id?: string;
     pickup_lat?: number;
     pickup_lng?: number;
     ride_type?: string;
     distance_km?: number;
+    payment_method?: string;
   };
 
   if (!ride_request_id || pickup_lat == null || pickup_lng == null || !ride_type) {
@@ -82,6 +170,9 @@ router.post("/match-driver", async (req, res) => {
   const rate = RATES_PER_KM[ride_type] ?? 60;
   const distKm = typeof distance_km === "number" && distance_km > 0 ? distance_km : 5;
   const total_fare = Math.round(distKm * rate);
+
+  // Normalise payment method
+  const pMethod = payment_method === "wallet" ? "wallet" : "cash";
 
   // Query all active + online drivers
   const { data: allDrivers, error: driversError } = await supabaseAdmin
@@ -113,7 +204,6 @@ router.post("/match-driver", async (req, res) => {
   };
   const compatTypes = compat[ride_type] ?? [ride_type];
 
-  // Score drivers: prefer compatible type AND nearest distance
   type DriverRow = typeof allDrivers[number];
   let best: DriverRow | null = null;
   let bestDist = Infinity;
@@ -153,19 +243,20 @@ router.post("/match-driver", async (req, res) => {
   // ETA: distance / average city speed 28 km/h → minutes, min 2
   const etaMinutes = Math.max(2, Math.round((bestDist / 28) * 60));
 
-  // Update ride_request — this triggers Supabase Realtime on the client
+  // Update ride_request — triggers Supabase Realtime on the client
   const { error: updateError } = await supabaseAdmin
     .from("ride_requests")
     .update({
-      status: "assigned",
-      driver_id: best.id,
-      driver_name: best.name,
-      driver_phone: best.phone ?? null,
+      status:               "assigned",
+      driver_id:            best.id,
+      driver_name:          best.name,
+      driver_phone:         best.phone ?? null,
       driver_vehicle_model: best.vehicle_model ?? null,
-      driver_plate: best.plate_number ?? null,
-      driver_rating: best.rating ?? 4.8,
-      driver_eta: etaMinutes,
+      driver_plate:         best.plate_number ?? null,
+      driver_rating:        best.rating ?? 4.8,
+      driver_eta:           etaMinutes,
       total_fare,
+      payment_method:       pMethod,
     })
     .eq("id", ride_request_id);
 
@@ -176,13 +267,12 @@ router.post("/match-driver", async (req, res) => {
   }
 
   req.log.info(
-    { ride_request_id, driver_id: best.id, eta: etaMinutes, total_fare },
+    { ride_request_id, driver_id: best.id, eta: etaMinutes, total_fare, payment_method: pMethod },
     "Driver assigned"
   );
 
-  // ── MVP auto-simulation: advance ride lifecycle ───────────────────────────
-  // 10 s → ongoing (driver picks up passenger)
-  // 30 s → completed
+  // ── Auto-simulation: advance ride lifecycle ───────────────────────────────
+  // 10 s → ongoing  |  30 s → completed (+ settle payment)
   const adminRef = supabaseAdmin;
   setTimeout(() => {
     adminRef
@@ -195,7 +285,9 @@ router.post("/match-driver", async (req, res) => {
             .from("ride_requests")
             .update({ status: "completed" })
             .eq("id", ride_request_id)
-            .then(() => {});
+            .then(() => {
+              settleRide(adminRef, ride_request_id).catch(() => {});
+            });
         }, 20_000);
       });
   }, 10_000);
@@ -203,13 +295,13 @@ router.post("/match-driver", async (req, res) => {
   res.json({
     status: "assigned",
     driver: {
-      id: best.id as string,
-      name: best.name as string,
-      phone: (best.phone ?? null) as string | null,
+      id:            best.id as string,
+      name:          best.name as string,
+      phone:         (best.phone ?? null) as string | null,
       vehicle_model: (best.vehicle_model ?? null) as string | null,
-      plate_number: (best.plate_number ?? null) as string | null,
-      rating: (best.rating ?? 4.8) as number,
-      eta: etaMinutes,
+      plate_number:  (best.plate_number ?? null) as string | null,
+      rating:        (best.rating ?? 4.8) as number,
+      eta:           etaMinutes,
     },
     total_fare,
   });

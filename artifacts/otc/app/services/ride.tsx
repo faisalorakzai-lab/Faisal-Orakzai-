@@ -25,6 +25,7 @@ import {
 import { PlacesSearch, type PlaceResult } from "@/components/ride/PlacesSearch";
 import { RideMapFull, type MapCoord } from "@/components/ride/RideMapFull";
 import { DriverFoundCard, type DriverInfo } from "@/components/ride/DriverFoundCard";
+import { PaymentSelector, type PaymentMethod } from "@/components/ride/PaymentSelector";
 import { useAuth } from "@/contexts/AuthContext";
 import { useLocation } from "@/contexts/LocationContext";
 import { useRide, type RideClass } from "@/contexts/RideContext";
@@ -79,6 +80,9 @@ export default function OtcRideScreen() {
   const [isEditingPrice, setIsEditingPrice] = useState(false);
   const [driverInfo, setDriverInfo] = useState<DriverInfo | null>(null);
   const [rideId, setRideId] = useState<string | null>(null);
+  const [paymentMethod, setPaymentMethod] = useState<PaymentMethod>("cash");
+  const [walletBalance, setWalletBalance] = useState<number | null>(null);
+  const [insufficientBalance, setInsufficientBalance] = useState(false);
 
   const searchAnim = useRef(new Animated.Value(0)).current;
   const searchLoopRef = useRef<Animated.CompositeAnimation | null>(null);
@@ -137,6 +141,24 @@ export default function OtcRideScreen() {
     setRideType(type);
     setSelectedClass(cls);
     recalcPrice(type, distanceKm);
+  }
+
+  async function handlePaymentSelect(method: PaymentMethod) {
+    setPaymentMethod(method);
+    setInsufficientBalance(false);
+    if (method === "wallet" && authUser?.id) {
+      try {
+        const resp = await fetch(getApiUrl(`/api/otc/wallet-balance/${authUser.id}`));
+        if (resp.ok) {
+          const json = (await resp.json()) as { wallet_balance: number };
+          setWalletBalance(json.wallet_balance);
+          const fare = parseInt(offeredPrice, 10) || suggestedPrice;
+          setInsufficientBalance(fare > 0 && json.wallet_balance < fare);
+        }
+      } catch {
+        setWalletBalance(null);
+      }
+    }
   }
 
   function startSearchAnimation() {
@@ -210,6 +232,17 @@ export default function OtcRideScreen() {
 
   async function handleConfirm() {
     if (!pickup || !dropoff) return;
+
+    // Wallet balance guard
+    if (paymentMethod === "wallet") {
+      const fare = parseInt(offeredPrice, 10) || suggestedPrice;
+      if (walletBalance !== null && walletBalance < fare) {
+        setInsufficientBalance(true);
+        Haptics.notificationAsync(Haptics.NotificationFeedbackType.Warning);
+        return;
+      }
+    }
+
     Haptics.impactAsync(Haptics.ImpactFeedbackStyle.Heavy);
 
     const id = `OTC-${Date.now()}-${Math.random()
@@ -286,6 +319,7 @@ export default function OtcRideScreen() {
             pickup_lng: pickup.lng,
             ride_type: rideType.id,
             distance_km: distanceKm,
+            payment_method: paymentMethod,
           }),
         });
 
@@ -372,6 +406,7 @@ export default function OtcRideScreen() {
       rideTypeLabel: rideType.label,
       totalFare: driverInfo.totalFare,
       offeredPrice: parseInt(offeredPrice, 10) || suggestedPrice,
+      paymentMethod,
     });
     router.push("/services/ride-active");
   }
@@ -389,6 +424,9 @@ export default function OtcRideScreen() {
     setSuggestedPrice(0);
     setRideId(null);
     setDriverInfo(null);
+    setPaymentMethod("cash");
+    setWalletBalance(null);
+    setInsufficientBalance(false);
     handledRef.current = false;
   }
 
@@ -596,6 +634,14 @@ export default function OtcRideScreen() {
                     </View>
                   </View>
                 )}
+
+                {/* ── Payment Method Selector ── */}
+                <PaymentSelector
+                  selected={paymentMethod}
+                  walletBalance={walletBalance}
+                  insufficientBalance={insufficientBalance}
+                  onSelect={handlePaymentSelect}
+                />
               </>
             )}
 

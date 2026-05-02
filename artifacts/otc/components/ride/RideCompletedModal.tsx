@@ -8,11 +8,13 @@ import {
   TouchableOpacity,
   View,
 } from "react-native";
+import type { PaymentMethod } from "@/components/ride/PaymentSelector";
 
 interface RideCompletedModalProps {
   totalFare: number;
   offeredPrice: number;
   rideTypeLabel: string;
+  paymentMethod: PaymentMethod;
   onBackToHome: () => void;
 }
 
@@ -20,17 +22,22 @@ export function RideCompletedModal({
   totalFare,
   offeredPrice,
   rideTypeLabel,
+  paymentMethod,
   onBackToHome,
 }: RideCompletedModalProps) {
-  const fadeAnim  = useRef(new Animated.Value(0)).current;
-  const slideAnim = useRef(new Animated.Value(80)).current;
-  const scaleAnim = useRef(new Animated.Value(0.92)).current;
+  const fadeAnim   = useRef(new Animated.Value(0)).current;
+  const slideAnim  = useRef(new Animated.Value(80)).current;
+  const scaleAnim  = useRef(new Animated.Value(0.92)).current;
+  const checkScale = useRef(new Animated.Value(0)).current;
+  const checkOpacity = useRef(new Animated.Value(0)).current;
+  const glowAnim   = useRef(new Animated.Value(0)).current;
 
   useEffect(() => {
     Haptics.notificationAsync(Haptics.NotificationFeedbackType.Success);
+
     Animated.parallel([
       Animated.timing(fadeAnim, {
-        toValue: 1, duration: 350, useNativeDriver: true,
+        toValue: 1, duration: 320, useNativeDriver: true,
       }),
       Animated.spring(slideAnim, {
         toValue: 0, tension: 65, friction: 12, useNativeDriver: true,
@@ -38,10 +45,35 @@ export function RideCompletedModal({
       Animated.spring(scaleAnim, {
         toValue: 1, tension: 65, friction: 12, useNativeDriver: true,
       }),
-    ]).start();
-  }, [fadeAnim, slideAnim, scaleAnim]);
+    ]).start(() => {
+      // Gold checkmark springs in after card settles
+      Animated.parallel([
+        Animated.spring(checkScale, {
+          toValue: 1, tension: 80, friction: 8, useNativeDriver: true,
+        }),
+        Animated.timing(checkOpacity, {
+          toValue: 1, duration: 200, useNativeDriver: true,
+        }),
+      ]).start(() => {
+        // Glow pulse loop
+        Animated.loop(
+          Animated.sequence([
+            Animated.timing(glowAnim, {
+              toValue: 1, duration: 900, useNativeDriver: true,
+            }),
+            Animated.timing(glowAnim, {
+              toValue: 0, duration: 900, useNativeDriver: true,
+            }),
+          ])
+        ).start();
+      });
+    });
+  }, [fadeAnim, slideAnim, scaleAnim, checkScale, checkOpacity, glowAnim]);
 
   const fare = totalFare > 0 ? totalFare : offeredPrice;
+
+  const payLabel = paymentMethod === "wallet" ? "OTC Wallet" : "Cash";
+  const payIcon  = paymentMethod === "wallet" ? "credit-card" : "dollar-sign";
 
   return (
     <Animated.View style={[styles.overlay, { opacity: fadeAnim }]}>
@@ -56,12 +88,38 @@ export function RideCompletedModal({
           },
         ]}
       >
-        {/* Success icon */}
+        {/* Animated checkmark icon */}
         <View style={styles.iconWrap}>
-          <View style={styles.iconRing}>
+          <Animated.View
+            style={[
+              styles.iconGlow,
+              {
+                opacity: glowAnim.interpolate({
+                  inputRange: [0, 1],
+                  outputRange: [0.15, 0.40],
+                }),
+                transform: [
+                  {
+                    scale: glowAnim.interpolate({
+                      inputRange: [0, 1],
+                      outputRange: [1, 1.25],
+                    }),
+                  },
+                ],
+              },
+            ]}
+          />
+          <Animated.View
+            style={[
+              styles.iconRing,
+              {
+                opacity: checkOpacity,
+                transform: [{ scale: checkScale }],
+              },
+            ]}
+          >
             <Feather name="check" size={32} color="#000" />
-          </View>
-          <View style={styles.iconGlow} />
+          </Animated.View>
         </View>
 
         <Text style={styles.title}>Ride Completed</Text>
@@ -70,16 +128,15 @@ export function RideCompletedModal({
           <Text style={{ color: "#FFD700" }}>OTC</Text>
         </Text>
 
-        {/* Divider */}
         <View style={styles.divider} />
 
-        {/* Fare row */}
+        {/* Fare */}
         <View style={styles.fareSection}>
-          <Text style={styles.fareLabel}>Total Fare</Text>
+          <Text style={styles.fareLabel}>TOTAL FARE</Text>
           <Text style={styles.fareAmount}>PKR {fare.toLocaleString()}</Text>
         </View>
 
-        {/* Detail rows */}
+        {/* Details */}
         <View style={styles.detailsCard}>
           <View style={styles.detailRow}>
             <View style={styles.detailLeft}>
@@ -93,10 +150,26 @@ export function RideCompletedModal({
 
           <View style={styles.detailRow}>
             <View style={styles.detailLeft}>
-              <Feather name="credit-card" size={13} color="#666" />
+              <Feather name={payIcon} size={13} color="#666" />
               <Text style={styles.detailKey}>Paid via</Text>
             </View>
-            <Text style={styles.detailVal}>Cash</Text>
+            <View style={styles.paidMethodBadge}>
+              <Feather
+                name={payIcon}
+                size={11}
+                color={paymentMethod === "wallet" ? "#FFD700" : "#22C55E"}
+              />
+              <Text
+                style={[
+                  styles.paidMethodText,
+                  paymentMethod === "wallet"
+                    ? styles.paidMethodWallet
+                    : styles.paidMethodCash,
+                ]}
+              >
+                {payLabel}
+              </Text>
+            </View>
           </View>
 
           <View style={styles.detailSep} />
@@ -106,8 +179,8 @@ export function RideCompletedModal({
               <Feather name="shield" size={13} color="#666" />
               <Text style={styles.detailKey}>Status</Text>
             </View>
-            <View style={styles.paidBadge}>
-              <Text style={styles.paidText}>VERIFIED</Text>
+            <View style={styles.verifiedBadge}>
+              <Text style={styles.verifiedText}>VERIFIED</Text>
             </View>
           </View>
         </View>
@@ -133,7 +206,7 @@ export function RideCompletedModal({
 const styles = StyleSheet.create({
   overlay: {
     ...StyleSheet.absoluteFillObject,
-    backgroundColor: "rgba(0,0,0,0.85)",
+    backgroundColor: "rgba(0,0,0,0.88)",
     alignItems: "center",
     justifyContent: "flex-end",
     paddingBottom: 32,
@@ -145,7 +218,7 @@ const styles = StyleSheet.create({
     backgroundColor: "#0C0C0C",
     borderRadius: 28,
     borderWidth: 1.5,
-    borderColor: "rgba(255,215,0,0.2)",
+    borderColor: "rgba(255,215,0,0.22)",
     padding: 28,
     alignItems: "center",
     gap: 14,
@@ -155,6 +228,8 @@ const styles = StyleSheet.create({
     position: "relative",
     alignItems: "center",
     justifyContent: "center",
+    width: 90,
+    height: 90,
     marginBottom: 4,
   },
   iconRing: {
@@ -171,7 +246,7 @@ const styles = StyleSheet.create({
     width: 90,
     height: 90,
     borderRadius: 45,
-    backgroundColor: "rgba(255,215,0,0.15)",
+    backgroundColor: "rgba(255,215,0,0.25)",
     zIndex: 1,
   },
 
@@ -196,10 +271,10 @@ const styles = StyleSheet.create({
 
   fareSection: { alignItems: "center", gap: 4 },
   fareLabel: {
-    fontSize: 11,
-    fontFamily: "Inter_500Medium",
+    fontSize: 10,
+    fontFamily: "Inter_700Bold",
     color: "#555",
-    letterSpacing: 1,
+    letterSpacing: 1.2,
   },
   fareAmount: {
     fontSize: 36,
@@ -215,7 +290,6 @@ const styles = StyleSheet.create({
     borderWidth: 1,
     borderColor: "rgba(255,255,255,0.05)",
     padding: 16,
-    gap: 0,
   },
   detailRow: {
     flexDirection: "row",
@@ -238,15 +312,35 @@ const styles = StyleSheet.create({
     height: 1,
     backgroundColor: "rgba(255,255,255,0.04)",
   },
-  paidBadge: {
-    backgroundColor: "rgba(34,197,94,0.12)",
+
+  paidMethodBadge: {
+    flexDirection: "row",
+    alignItems: "center",
+    gap: 5,
+    borderRadius: 8,
+    paddingHorizontal: 10,
+    paddingVertical: 4,
+    backgroundColor: "rgba(255,215,0,0.06)",
+    borderWidth: 1,
+    borderColor: "rgba(255,215,0,0.2)",
+  },
+  paidMethodText: {
+    fontSize: 12,
+    fontFamily: "Inter_700Bold",
+    letterSpacing: 0.3,
+  },
+  paidMethodWallet: { color: "#FFD700" },
+  paidMethodCash:   { color: "#22C55E" },
+
+  verifiedBadge: {
+    backgroundColor: "rgba(34,197,94,0.1)",
     borderRadius: 8,
     paddingHorizontal: 10,
     paddingVertical: 4,
     borderWidth: 1,
     borderColor: "rgba(34,197,94,0.3)",
   },
-  paidText: {
+  verifiedText: {
     fontSize: 10,
     fontFamily: "Inter_700Bold",
     color: "#22C55E",

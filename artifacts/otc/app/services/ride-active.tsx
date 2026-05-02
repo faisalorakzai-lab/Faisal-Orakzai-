@@ -317,6 +317,7 @@ export default function RideActiveScreen() {
           totalFare={totalFare > 0 ? totalFare : offeredPrice}
           offeredPrice={offeredPrice}
           rideTypeLabel={rideTypeLabel}
+          paymentMethod={rideData.paymentMethod}
           onBackToHome={handleBackToHome}
         />
       )}

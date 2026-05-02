@@ -1,5 +1,6 @@
 import type { DriverInfo } from "@/components/ride/DriverFoundCard";
 import type { MapCoord } from "@/components/ride/RideMapFull";
+import type { PaymentMethod } from "@/components/ride/PaymentSelector";
 
 export interface ActiveRideData {
   rideId: string;
@@ -9,6 +10,7 @@ export interface ActiveRideData {
   rideTypeLabel: string;
   totalFare: number;
   offeredPrice: number;
+  paymentMethod: PaymentMethod;
 }
 
 let _store: ActiveRideData | null = null;
