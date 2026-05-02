@@ -1,6 +1,6 @@
 import { MaterialCommunityIcons } from "@expo/vector-icons";
 import * as Haptics from "expo-haptics";
-import { router } from "expo-router";
+import { router, type Href } from "expo-router";
 import React, { useRef } from "react";
 import {
   Animated,
@@ -27,7 +27,7 @@ interface ServicePillar {
   label: string;
   sub: string;
   icon: keyof typeof MaterialCommunityIcons.glyphMap;
-  route: string;
+  route: Href;
   active: boolean;
 }
 
@@ -65,7 +65,7 @@ function ServiceTile({ pillar }: { pillar: ServicePillar }) {
       Haptics.notificationAsync(Haptics.NotificationFeedbackType.Warning);
       return;
     }
-    router.push(pillar.route as any);
+    router.push(pillar.route);
   }
 
   const glowOpacity = glowAnim.interpolate({

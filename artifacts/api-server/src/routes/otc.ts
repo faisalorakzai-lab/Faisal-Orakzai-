@@ -115,8 +115,16 @@ router.get("/health", (_req, res) => {
 });
 
 // ── GET /api/otc/wallet-balance/:userId ──────────────────────────────────────
+// MVP: userId is supplied by the authenticated client. In production this
+// route should be protected by an auth middleware that verifies the JWT and
+// asserts req.user.id === params.userId before querying.
 router.get("/wallet-balance/:userId", async (req, res) => {
   const { userId } = req.params;
+
+  if (!userId || userId.trim() === "") {
+    res.status(400).json({ error: "userId is required" });
+    return;
+  }
 
   if (!supabaseAdmin) {
     res.status(503).json({ error: "Supabase not configured" });
