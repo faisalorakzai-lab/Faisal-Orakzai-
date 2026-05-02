@@ -1,10 +1,14 @@
 import { Router } from "express";
 import { createClient } from "@supabase/supabase-js";
+import { createHmac, timingSafeEqual } from "crypto";
 
 const router = Router();
 
-const SUPABASE_URL = process.env.SUPABASE_URL ?? "";
+const SUPABASE_URL       = process.env.SUPABASE_URL        ?? "";
 const SUPABASE_SECRET_KEY = process.env.SUPABASE_SECRET_KEY ?? "";
+// SESSION_SECRET is a true server-held secret — never shipped to clients.
+// Tokens are HMAC-SHA256 signed with this secret and verified on every request.
+const SESSION_SECRET     = process.env.SESSION_SECRET       ?? "fallback_dev_only_secret_32chars!";
 
 const supabaseAdmin =
   SUPABASE_URL && SUPABASE_SECRET_KEY
@@ -13,49 +17,68 @@ const supabaseAdmin =
       })
     : null;
 
-// ── Auth helper ──────────────────────────────────────────────────────────────
-// Parses and verifies the OTC custom token (header.payload.sig — all base64).
-// Token format (built client-side in AuthContext.buildSessionToken):
-//   header = btoa(JSON.stringify({ alg:"HS256", typ:"JWT" }))
-//   payload = btoa(JSON.stringify({ sub, phone, iat, exp, iss:"otc-super-app" }))
-//   sig     = btoa(`${sub}.${phone}.otc_sovereign_secret`)
-//
-// Verification: re-derive expected sig from decoded sub+phone and compare.
-// This ensures only tokens minted by the genuine client auth flow are accepted.
+// ── Token helpers ─────────────────────────────────────────────────────────────
+// Tokens are issued by the server only (POST /api/otc/auth/token).
+// Format: base64(header).base64(payload).base64(HMAC-SHA256 signature)
+// The HMAC is keyed with SESSION_SECRET — only the server can mint valid tokens.
+
+function mintOtcToken(sub: string, phone: string): string {
+  const header  = Buffer.from(JSON.stringify({ alg: "HS256", typ: "JWT" })).toString("base64");
+  const payload = Buffer.from(
+    JSON.stringify({
+      sub,
+      phone,
+      iat: Math.floor(Date.now() / 1000),
+      exp: Math.floor(Date.now() / 1000) + 30 * 24 * 60 * 60, // 30 days
+      iss: "otc-super-app",
+    })
+  ).toString("base64");
+  const sig = createHmac("sha256", SESSION_SECRET)
+    .update(`${header}.${payload}`)
+    .digest("base64");
+  return `${header}.${payload}.${sig}`;
+}
+
+// Returns {sub, exp} if the token is validly signed by SESSION_SECRET, else null.
 function parseOtcToken(authHeader: string | undefined): { sub: string; exp: number } | null {
   if (!authHeader?.startsWith("Bearer ")) return null;
   const token = authHeader.slice(7);
   const parts = token.split(".");
   if (parts.length !== 3) return null;
   try {
+    // Re-compute expected HMAC signature
+    const expectedSig = createHmac("sha256", SESSION_SECRET)
+      .update(`${parts[0]}.${parts[1]}`)
+      .digest("base64");
+
+    // Timing-safe comparison — prevents timing attacks
+    const actualBuf   = Buffer.from(parts[2],      "base64");
+    const expectedBuf = Buffer.from(expectedSig,   "base64");
+    if (actualBuf.length !== expectedBuf.length) return null;
+    if (!timingSafeEqual(actualBuf, expectedBuf))  return null;
+
     const payload = JSON.parse(Buffer.from(parts[1], "base64").toString("utf8")) as {
       sub?: unknown;
       exp?: unknown;
       iss?: unknown;
-      phone?: unknown;
     };
     if (payload.iss !== "otc-super-app") return null;
     if (typeof payload.sub !== "string" || typeof payload.exp !== "number") return null;
-    if (typeof payload.phone !== "string") return null;
-
-    // Verify signature: expected = btoa(`${sub}.${phone}.otc_sovereign_secret`)
-    const expectedSig = Buffer.from(
-      `${payload.sub}.${payload.phone}.otc_sovereign_secret`
-    ).toString("base64");
-
-    // Constant-time comparison to prevent timing attacks
-    const actualSig = parts[2];
-    if (actualSig.length !== expectedSig.length) return null;
-    let diff = 0;
-    for (let i = 0; i < actualSig.length; i++) {
-      diff |= actualSig.charCodeAt(i) ^ expectedSig.charCodeAt(i);
-    }
-    if (diff !== 0) return null;
 
     return { sub: payload.sub, exp: payload.exp };
   } catch {
     return null;
   }
+}
+
+// Common auth guard reused across all protected routes
+function requireAuth(
+  authHeader: string | undefined
+): { claims: { sub: string; exp: number } } | { error: string; status: number } {
+  const claims = parseOtcToken(authHeader);
+  if (!claims)                                      return { error: "Unauthorized — missing or invalid token", status: 401 };
+  if (Math.floor(Date.now() / 1000) > claims.exp)  return { error: "Unauthorized — token expired",           status: 401 };
+  return { claims };
 }
 
 export async function ensureOtcTables(): Promise<void> {
@@ -198,14 +221,77 @@ router.get("/health", (_req, res) => {
   res.json({ supabase: supabaseAdmin !== null });
 });
 
+// ── POST /api/otc/auth/token ──────────────────────────────────────────────────
+// Issues a server-signed HMAC-SHA256 token for the OTC app.
+// Client NEVER mints its own tokens — only the server can produce valid tokens.
+router.post("/auth/token", async (req, res) => {
+  const { phone, otp } = req.body as { phone?: string; otp?: string };
+
+  if (!phone?.trim()) { res.status(400).json({ error: "phone is required" }); return; }
+  if (!otp?.trim())   { res.status(400).json({ error: "otp is required"   }); return; }
+
+  // Demo OTP validation — replace with real SMS verification in production
+  if (otp !== "123456" && otp !== "000000") {
+    res.status(401).json({ error: "Invalid OTP. Use 123456 for demo." });
+    return;
+  }
+
+  // Look up or create user profile in Supabase
+  let userId: string | null = null;
+  let existingName: string | null = null;
+  let referralCode: string | null = null;
+
+  if (supabaseAdmin) {
+    const { data: profile } = await supabaseAdmin
+      .from("profiles")
+      .select("user_id, name, referral_code")
+      .eq("phone", phone.trim())
+      .maybeSingle();
+
+    userId       = (profile?.user_id       as string | null) ?? null;
+    existingName = (profile?.name          as string | null) ?? null;
+    referralCode = (profile?.referral_code as string | null) ?? null;
+  }
+
+  // Generate deterministic ID for new users
+  if (!userId) {
+    userId = Date.now().toString(36) + Math.random().toString(36).substring(2, 9);
+  }
+
+  // Generate referral code if missing
+  if (!referralCode) {
+    const chars = "ABCDEFGHJKLMNPQRSTUVWXYZ23456789";
+    let code = "OTC";
+    for (let i = 0; i < 5; i++) code += chars[Math.floor(Math.random() * chars.length)];
+    referralCode = code;
+  }
+
+  // Upsert profile with referral_code
+  if (supabaseAdmin) {
+    await supabaseAdmin.from("profiles").upsert(
+      {
+        user_id:       userId,
+        phone:         phone.trim(),
+        wallet_balance: 0,
+        okbond_coins:  0,
+        referral_code: referralCode,
+      },
+      { onConflict: "phone", ignoreDuplicates: false }
+    ).then(() => {}, () => {});
+  }
+
+  const token = mintOtcToken(userId, phone.trim());
+
+  req.log.info({ userId }, "OTC session token issued");
+  res.json({ token, user_id: userId, name: existingName, referral_code: referralCode });
+});
+
 // ── GET /api/otc/referral/stats/:userId ──────────────────────────────────────
 router.get("/referral/stats/:userId", async (req, res) => {
   const { userId } = req.params;
-  const claims = parseOtcToken(req.headers.authorization);
-  if (!claims || claims.sub !== userId) {
-    res.status(401).json({ error: "Unauthorized" });
-    return;
-  }
+  const auth = requireAuth(req.headers.authorization);
+  if ("error" in auth) { res.status(auth.status).json({ error: auth.error }); return; }
+  if (auth.claims.sub !== userId) { res.status(403).json({ error: "Forbidden" }); return; }
   if (!supabaseAdmin) { res.status(503).json({ error: "Supabase not configured" }); return; }
 
   const { data } = await supabaseAdmin
@@ -225,11 +311,8 @@ router.get("/referral/stats/:userId", async (req, res) => {
 // ── POST /api/otc/referral/apply ──────────────────────────────────────────────
 // Called when a new user enters a referral code during profile setup.
 router.post("/referral/apply", async (req, res) => {
-  const claims = parseOtcToken(req.headers.authorization);
-  if (!claims) { res.status(401).json({ error: "Unauthorized" }); return; }
-  if (Math.floor(Date.now() / 1000) > claims.exp) {
-    res.status(401).json({ error: "Token expired" }); return;
-  }
+  const auth = requireAuth(req.headers.authorization);
+  if ("error" in auth) { res.status(auth.status).json({ error: auth.error }); return; }
   if (!supabaseAdmin) { res.status(503).json({ error: "Supabase not configured" }); return; }
 
   const { referral_code, device_id } = req.body as {
@@ -241,7 +324,7 @@ router.post("/referral/apply", async (req, res) => {
     res.status(400).json({ error: "referral_code is required" }); return;
   }
 
-  const userId = claims.sub;
+  const userId = auth.claims.sub;
   const code   = referral_code.trim().toUpperCase();
 
   // Prevent self-referral
@@ -301,15 +384,11 @@ router.post("/referral/apply", async (req, res) => {
 // Called after the new user's first ride completes.
 // Credits coins to both users and checks for the $100 milestone.
 router.post("/referral/complete", async (req, res) => {
-  const claims = parseOtcToken(req.headers.authorization);
-  if (!claims) { res.status(401).json({ error: "Unauthorized" }); return; }
-  // Enforce token expiry (consistent with all other OTC auth paths)
-  if (Math.floor(Date.now() / 1000) > claims.exp) {
-    res.status(401).json({ error: "Token expired" }); return;
-  }
+  const auth = requireAuth(req.headers.authorization);
+  if ("error" in auth) { res.status(auth.status).json({ error: auth.error }); return; }
   if (!supabaseAdmin) { res.status(503).json({ error: "Supabase not configured" }); return; }
 
-  const userId = claims.sub;
+  const userId = auth.claims.sub;
 
   // ── Verify a real completed ride exists for this user ─────────────────────
   // This prevents the endpoint from being triggered without a genuine ride.
@@ -431,16 +510,9 @@ router.get("/wallet-balance/:userId", async (req, res) => {
     return;
   }
 
-  const claims = parseOtcToken(req.headers.authorization);
-  if (!claims) {
-    res.status(401).json({ error: "Unauthorized — missing or invalid token" });
-    return;
-  }
-  if (Math.floor(Date.now() / 1000) > claims.exp) {
-    res.status(401).json({ error: "Unauthorized — token expired" });
-    return;
-  }
-  if (claims.sub !== userId) {
+  const auth = requireAuth(req.headers.authorization);
+  if ("error" in auth) { res.status(auth.status).json({ error: auth.error }); return; }
+  if (auth.claims.sub !== userId) {
     res.status(403).json({ error: "Forbidden — token subject does not match userId" });
     return;
   }
@@ -489,15 +561,8 @@ router.post("/match-driver", async (req, res) => {
   }
 
   // Verify the caller holds a valid session token
-  const claims = parseOtcToken(req.headers.authorization);
-  if (!claims) {
-    res.status(401).json({ error: "Unauthorized — missing or invalid token" });
-    return;
-  }
-  if (Math.floor(Date.now() / 1000) > claims.exp) {
-    res.status(401).json({ error: "Unauthorized — token expired" });
-    return;
-  }
+  const auth = requireAuth(req.headers.authorization);
+  if ("error" in auth) { res.status(auth.status).json({ error: auth.error }); return; }
 
   if (!supabaseAdmin) {
     res.status(503).json({ error: "Supabase not configured on server" });
@@ -510,7 +575,7 @@ router.post("/match-driver", async (req, res) => {
     .select("user_id")
     .eq("id", ride_request_id)
     .single();
-  if (rideOwner?.user_id && rideOwner.user_id !== claims.sub) {
+  if (rideOwner?.user_id && rideOwner.user_id !== auth.claims.sub) {
     res.status(403).json({ error: "Forbidden — ride request does not belong to this user" });
     return;
   }

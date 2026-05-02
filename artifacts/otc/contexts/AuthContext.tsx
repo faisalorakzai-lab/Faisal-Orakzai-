@@ -41,61 +41,20 @@ const STORAGE_KEYS = {
   USER: "@otc/user",
 };
 
-function generateReferralCode(): string {
-  const chars = "ABCDEFGHJKLMNPQRSTUVWXYZ23456789";
-  let code = "OTC";
-  for (let i = 0; i < 5; i++) {
-    code += chars[Math.floor(Math.random() * chars.length)];
-  }
-  return code;
-}
+// Derive the API base URL: on Expo web the shared proxy is the same origin;
+// on native the EXPO_PUBLIC_DOMAIN env var points to the Replit dev domain.
+const API_BASE = process.env.EXPO_PUBLIC_DOMAIN
+  ? `https://${process.env.EXPO_PUBLIC_DOMAIN}`
+  : "";
 
-function buildSessionToken(userId: string, phone: string): string {
-  const header = btoa(JSON.stringify({ alg: "HS256", typ: "JWT" }));
-  const payload = btoa(
-    JSON.stringify({
-      sub: userId,
-      phone,
-      iat: Math.floor(Date.now() / 1000),
-      exp: Math.floor(Date.now() / 1000) + 30 * 24 * 60 * 60,
-      iss: "otc-super-app",
-    })
-  );
-  const sig = btoa(`${userId}.${phone}.otc_sovereign_secret`);
-  return `${header}.${payload}.${sig}`;
-}
-
-async function syncProfileToSupabase(user: User): Promise<void> {
+async function syncProfileNameToSupabase(user: User): Promise<void> {
   if (!supabase) return;
   try {
-    await supabase.from("profiles").upsert(
-      {
-        user_id: user.id,
-        name: user.name ?? null,
-        phone: user.phone,
-        wallet_balance: 0,
-        okbond_coins: 0,
-        referral_code: user.referralCode,
-      },
-      { onConflict: "phone", ignoreDuplicates: false }
-    );
-  } catch {
-  }
-}
-
-async function fetchProfileFromSupabase(
-  phone: string
-): Promise<{ name?: string; user_id?: string; referral_code?: string } | null> {
-  if (!supabase) return null;
-  try {
-    const { data } = await supabase
+    await supabase
       .from("profiles")
-      .select("user_id, name, referral_code")
-      .eq("phone", phone)
-      .maybeSingle();
-    return data ?? null;
+      .update({ name: user.name ?? null })
+      .eq("user_id", user.id);
   } catch {
-    return null;
   }
 }
 
@@ -129,39 +88,43 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
   }, []);
 
   const login = useCallback(async (phone: string, otp: string) => {
-    if (otp !== "123456" && otp !== "000000") {
-      throw new Error("Invalid OTP. Use 123456 for demo.");
+    // Request a server-signed token — the server validates the OTP and
+    // signs the token with SESSION_SECRET. Clients never mint their own tokens.
+    const response = await fetch(`${API_BASE}/api/otc/auth/token`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ phone: phone.trim(), otp }),
+    });
+
+    if (!response.ok) {
+      const err = await response.json().catch(() => ({})) as { error?: string };
+      throw new Error(err.error ?? "Authentication failed");
     }
 
-    const existing = await fetchProfileFromSupabase(phone);
-
-    const userId =
-      existing?.user_id ??
-      Date.now().toString(36) + Math.random().toString(36).substring(2, 9);
-
-    const newUser: User = {
-      id: userId,
-      phone,
-      name: existing?.name ?? undefined,
-      referralCode: existing?.referral_code ?? generateReferralCode(),
-      countryCode: pendingCountry?.code,
-      dialCode: pendingCountry?.dialCode,
+    const data = await response.json() as {
+      token: string;
+      user_id: string;
+      name: string | null;
+      referral_code: string;
     };
 
-    const sessionToken = buildSessionToken(userId, phone);
+    const newUser: User = {
+      id:           data.user_id,
+      phone:        phone.trim(),
+      name:         data.name ?? undefined,
+      referralCode: data.referral_code,
+      countryCode:  pendingCountry?.code,
+      dialCode:     pendingCountry?.dialCode,
+    };
 
     await Promise.all([
-      AsyncStorage.setItem(STORAGE_KEYS.TOKEN, sessionToken),
+      AsyncStorage.setItem(STORAGE_KEYS.TOKEN, data.token),
       AsyncStorage.setItem(STORAGE_KEYS.USER, JSON.stringify(newUser)),
     ]);
 
-    setToken(sessionToken);
+    setToken(data.token);
     setUser(newUser);
     setNeedsProfileSetup(!newUser.name);
-
-    if (!existing) {
-      syncProfileToSupabase(newUser).catch(() => {});
-    }
   }, [pendingCountry]);
 
   const setupProfile = useCallback(
@@ -171,7 +134,7 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
       await AsyncStorage.setItem(STORAGE_KEYS.USER, JSON.stringify(updated));
       setUser(updated);
       setNeedsProfileSetup(false);
-      syncProfileToSupabase(updated).catch(() => {});
+      syncProfileNameToSupabase(updated).catch(() => {});
     },
     [user]
   );
