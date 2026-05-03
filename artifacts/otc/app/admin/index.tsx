@@ -30,9 +30,9 @@ export const NAV_ITEMS = [
   { key: "drivers", label: "Driver Verification", icon: "shield" as const, route: "/admin/drivers" },
   { key: "rides", label: "Ride Ledger", icon: "map" as const, route: "/admin/rides" },
   { key: "users", label: "Users", icon: "users" as const, route: "/admin/users" },
-  { key: "rentals", label: "Rentals", icon: "key" as const, route: "/admin" },
-  { key: "hotels", label: "Hotels", icon: "home" as const, route: "/admin" },
-  { key: "flights", label: "Flights", icon: "send" as const, route: "/admin" },
+  { key: "rentals", label: "Rentals", icon: "key" as const, route: "/admin/rentals" },
+  { key: "hotels", label: "Hotels", icon: "home" as const, route: "/admin/hotels" },
+  { key: "flights", label: "Flights", icon: "send" as const, route: "/admin/flights" },
   { key: "financials", label: "Financials", icon: "dollar-sign" as const, route: "/admin" },
 ] as const;
 

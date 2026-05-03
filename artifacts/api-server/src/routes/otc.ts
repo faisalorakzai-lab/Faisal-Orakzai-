@@ -277,7 +277,7 @@ router.get("/admin/rides", async (req, res) => {
   let query = supabaseAdmin
     .from("ride_requests")
     .select("id, user_id, driver_id, pickup_address, dropoff_address, total_fare, distance_km, ride_type, service_type, payment_method, status, created_at, updated_at, admin_cancellation_reason", { count: "exact" });
-  const validStatuses = ["searching", "assigned", "arrived", "ongoing", "completed", "cancelled"];
+  const validStatuses = ["searching", "ongoing", "completed", "cancelled"];
   if (statusFilter !== "all" && validStatuses.includes(statusFilter)) {
     query = query.ilike("status", statusFilter);
   }
@@ -326,7 +326,7 @@ router.patch("/admin/rides/:id/override", async (req, res) => {
   if (!supabaseAdmin) { res.status(503).json({ error: "Supabase not configured" }); return; }
   const { id } = req.params;
   const { status, cancellation_reason } = req.body as { status?: string; cancellation_reason?: string };
-  const allowed = ["Searching", "Assigned", "arrived", "ongoing", "completed", "Cancelled"];
+  const allowed = ["Searching", "Ongoing", "Completed", "Cancelled"];
   if (!status || !allowed.includes(status)) { res.status(400).json({ error: `status must be one of: ${allowed.join(", ")}` }); return; }
   const update: Record<string, unknown> = { status, updated_at: new Date().toISOString() };
   if (status === "Cancelled" && cancellation_reason?.trim()) {
@@ -337,6 +337,95 @@ router.patch("/admin/rides/:id/override", async (req, res) => {
   if (error || !data) { res.status(500).json({ error: "Failed to override ride status" }); return; }
   req.log.info({ rideId: id, status }, "Admin ride override");
   res.json({ ok: true, ride: data });
+});
+
+router.get("/admin/bookings", async (req, res) => {
+  if (!supabaseAdmin) { res.status(503).json({ error: "Supabase not configured" }); return; }
+  const type = String(req.query.type ?? "all");
+  const page = Math.max(Number(req.query.page ?? 1) || 1, 1);
+  const pageSize = Math.min(Math.max(Number(req.query.pageSize ?? 20) || 20, 1), 50);
+  const from = (page - 1) * pageSize;
+  const to = from + pageSize - 1;
+  const mapType = (rowType: string) => {
+    if (rowType === "car") return "Car Rentals";
+    if (rowType === "hotel") return "Hotel Stays";
+    if (rowType === "flight") return "Flight Tickets";
+    return rowType;
+  };
+
+  const tableMap: Record<string, string> = {
+    car: "rental_requests",
+    hotel: "hotel_bookings",
+    flight: "airline_bookings",
+  };
+
+  const types = type === "all" ? ["car", "hotel", "flight"] : [type];
+  const items = [];
+
+  for (const currentType of types) {
+    const table = tableMap[currentType];
+    if (!table) continue;
+    const { data, error, count } = await supabaseAdmin
+      .from(table)
+      .select("*", { count: "exact" })
+      .order("created_at", { ascending: false })
+      .range(from, to);
+    if (error) { res.status(500).json({ error: `Failed to fetch ${currentType} bookings` }); return; }
+    for (const row of data ?? []) {
+      items.push({
+        id: row.id,
+        type: currentType,
+        service: mapType(currentType),
+        user_name: row.user_name ?? row.customer_name ?? row.name ?? "Unknown User",
+        requested_dates: row.requested_dates ?? row.booking_dates ?? row.departure_date ?? row.check_in ?? row.check_out ?? "—",
+        proposed_price: Number(row.proposed_price ?? row.requested_price ?? row.amount ?? row.total_price ?? 0),
+        status: row.status ?? "pending_review",
+        created_at: row.created_at ?? null,
+        final_price: row.final_price ?? null,
+        confirmed: Boolean(row.confirmed ?? false),
+        voucher_url: row.voucher_url ?? row.ticket_url ?? row.document_url ?? null,
+        asset_reserved: Boolean(row.asset_reserved ?? false),
+        admin_reason: row.admin_reason ?? row.rejection_reason ?? null,
+        contact_phone: row.phone ?? row.contact_phone ?? null,
+      });
+    }
+  }
+
+  items.sort((a, b) => String(b.created_at ?? "").localeCompare(String(a.created_at ?? "")));
+  res.json({ items, page, pageSize, total: items.length, totalPages: Math.max(Math.ceil(items.length / pageSize), 1) });
+});
+
+router.patch("/admin/bookings/:id/manage", async (req, res) => {
+  if (!supabaseAdmin) { res.status(503).json({ error: "Supabase not configured" }); return; }
+  const { id } = req.params;
+  const { type, action, asset_reserved, final_price, reason, file_url } = req.body as {
+    type?: "car" | "hotel" | "flight";
+    action?: "approve" | "reject" | "upload";
+    asset_reserved?: boolean;
+    final_price?: number;
+    reason?: string;
+    file_url?: string;
+  };
+  const table = type === "car" ? "rental_requests" : type === "hotel" ? "hotel_bookings" : type === "flight" ? "airline_bookings" : "";
+  if (!table || !action) { res.status(400).json({ error: "type and action are required" }); return; }
+  const update: Record<string, unknown> = { updated_at: new Date().toISOString() };
+  if (typeof asset_reserved === "boolean") update.asset_reserved = asset_reserved;
+  if (typeof final_price === "number") update.final_price = final_price;
+  if (action === "approve") {
+    update.status = "confirmed";
+    update.confirmed = true;
+    update.admin_reason = null;
+  } else if (action === "reject") {
+    update.status = "cancelled";
+    update.confirmed = false;
+    update.admin_reason = reason?.trim() ?? "Rejected by admin";
+  } else if (action === "upload") {
+    if (!file_url?.trim()) { res.status(400).json({ error: "file_url is required" }); return; }
+    update.voucher_url = file_url.trim();
+  }
+  const { data, error } = await supabaseAdmin.from(table).update(update).eq("id", id).select("id, status").single();
+  if (error || !data) { res.status(500).json({ error: "Failed to manage booking" }); return; }
+  res.json({ ok: true, booking: data });
 });
 
 router.post("/driver/otp-request", async (req, res) => {
