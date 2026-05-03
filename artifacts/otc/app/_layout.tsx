@@ -58,6 +58,7 @@ function RootLayoutNav() {
     <Stack screenOptions={{ headerShown: false }}>
       <Stack.Screen name="(auth)" />
       <Stack.Screen name="(tabs)" />
+      <Stack.Screen name="admin" />
       <Stack.Screen
         name="services/ride"
         options={{ presentation: "card", headerShown: false, animation: "slide_from_bottom" }}
