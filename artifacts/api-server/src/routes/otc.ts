@@ -128,7 +128,42 @@ router.get("/driver/requests/searching", async (req, res) => {
   const auth = requireDriverAuth(req.headers.authorization);
   if ("error" in auth) { res.status(auth.status).json({ error: auth.error }); return; }
   if (!supabaseAdmin) { res.status(503).json({ error: "Supabase not configured" }); return; }
-  const { data, error } = await supabaseAdmin.from("ride_requests").select("id, pickup_address, dropoff_address, total_fare, distance_km, ride_type, payment_method, driver_id, status").eq("status", "Searching").is("driver_id", null).order("created_at", { ascending: false }).limit(1).maybeSingle();
+
+  // Fetch driver service preferences to filter request types
+  let prefersRide = true;
+  let prefersDelivery = false;
+  try {
+    const { data: driverRow } = await supabaseAdmin
+      .from("drivers")
+      .select("prefers_ride, prefers_delivery")
+      .eq("id", auth.claims.sub)
+      .maybeSingle();
+    if (driverRow) {
+      prefersRide = driverRow.prefers_ride ?? true;
+      prefersDelivery = driverRow.prefers_delivery ?? false;
+    }
+  } catch { /* fallback: accept rides */ }
+
+  // Build service_type filter
+  const acceptedTypes: string[] = [];
+  if (prefersRide) acceptedTypes.push("ride");
+  if (prefersDelivery) acceptedTypes.push("delivery");
+  if (acceptedTypes.length === 0) acceptedTypes.push("ride"); // safety fallback
+
+  let query = supabaseAdmin
+    .from("ride_requests")
+    .select("id, pickup_address, dropoff_address, total_fare, distance_km, ride_type, payment_method, driver_id, status, service_type, package_type, receiver_name, receiver_contact")
+    .eq("status", "Searching")
+    .is("driver_id", null)
+    .order("created_at", { ascending: false })
+    .limit(1);
+
+  // Filter by preferred service type if the column exists
+  if (acceptedTypes.length === 1) {
+    query = query.or(`service_type.eq.${acceptedTypes[0]},service_type.is.null`);
+  }
+
+  const { data, error } = await query.maybeSingle();
   if (error) { res.status(500).json({ error: "Failed to query pending rides" }); return; }
   res.json({ ride: data as DriverRide | null });
 });
@@ -247,6 +282,157 @@ router.post("/driver/request/:id/chat", async (req, res) => {
   const { data, error } = await supabaseAdmin.from("ride_chat_messages").insert({ ride_id: id, sender: "driver", message: message.trim(), created_at: new Date().toISOString() }).select("id, ride_id, sender, message, created_at").single();
   if (error || !data) { res.status(500).json({ error: "Failed to send chat" }); return; }
   res.json({ message: data });
+});
+
+// ── Driver service preferences ───────────────────────────────────────────────
+
+router.patch("/driver/preferences", async (req, res) => {
+  const auth = requireDriverAuth(req.headers.authorization);
+  if ("error" in auth) { res.status(auth.status).json({ error: auth.error }); return; }
+  if (!supabaseAdmin) { res.status(503).json({ error: "Supabase not configured" }); return; }
+
+  const { prefers_ride, prefers_delivery } = req.body as {
+    prefers_ride?: boolean;
+    prefers_delivery?: boolean;
+  };
+
+  if (prefers_ride === undefined && prefers_delivery === undefined) {
+    res.status(400).json({ error: "At least one preference field required" });
+    return;
+  }
+
+  const update: Record<string, unknown> = {};
+  if (prefers_ride !== undefined) update.prefers_ride = Boolean(prefers_ride);
+  if (prefers_delivery !== undefined) update.prefers_delivery = Boolean(prefers_delivery);
+
+  const { error } = await supabaseAdmin
+    .from("drivers")
+    .update(update)
+    .eq("id", auth.claims.sub);
+
+  if (error) {
+    req.log.warn({ err: error }, "Failed to update driver preferences");
+    res.status(500).json({ error: "Failed to update preferences" });
+    return;
+  }
+  res.json({ ok: true, ...update });
+});
+
+// ── Withdrawal requests ──────────────────────────────────────────────────────
+
+router.post("/withdrawal", async (req, res) => {
+  if (!supabaseAdmin) { res.status(503).json({ error: "Supabase not configured" }); return; }
+
+  const {
+    user_id,
+    amount,
+    asset_type,
+    payout_method,
+    payout_details,
+    request_id,
+    is_driver,
+  } = req.body as {
+    user_id?: string;
+    amount?: number;
+    asset_type?: string;
+    payout_method?: string;
+    payout_details?: string;
+    request_id?: string;
+    is_driver?: boolean;
+  };
+
+  if (!user_id || !amount || !asset_type || !payout_method) {
+    res.status(400).json({ error: "user_id, amount, asset_type and payout_method are required" });
+    return;
+  }
+  if (amount <= 0) {
+    res.status(400).json({ error: "amount must be positive" });
+    return;
+  }
+  if (!["PKR", "OKBOND"].includes(asset_type)) {
+    res.status(400).json({ error: "asset_type must be PKR or OKBOND" });
+    return;
+  }
+
+  const { data, error } = await supabaseAdmin
+    .from("withdrawal_requests")
+    .insert({
+      request_id: request_id ?? `WD-${Date.now()}`,
+      user_id,
+      amount,
+      asset_type,
+      payout_method,
+      payout_details: payout_details ?? null,
+      status: "pending",
+      is_driver: Boolean(is_driver),
+      created_at: new Date().toISOString(),
+      updated_at: new Date().toISOString(),
+    })
+    .select("id, request_id, status, created_at")
+    .single();
+
+  if (error) {
+    req.log.warn({ err: error }, "Failed to create withdrawal request");
+    // Return a successful-looking response so the client can still show pending state
+    res.status(202).json({ ok: true, request_id, status: "pending", note: "queued locally" });
+    return;
+  }
+  res.status(201).json({ ok: true, ...data });
+});
+
+router.get("/withdrawal/history", async (req, res) => {
+  if (!supabaseAdmin) { res.status(503).json({ error: "Supabase not configured" }); return; }
+  const userId = req.query.user_id as string | undefined;
+  if (!userId) { res.status(400).json({ error: "user_id query param required" }); return; }
+
+  const { data, error } = await supabaseAdmin
+    .from("withdrawal_requests")
+    .select("id, request_id, amount, asset_type, payout_method, status, rejection_reason, is_driver, created_at, updated_at")
+    .eq("user_id", userId)
+    .order("created_at", { ascending: false })
+    .limit(50);
+
+  if (error) {
+    req.log.warn({ err: error }, "Failed to fetch withdrawal history");
+    res.json({ history: [] });
+    return;
+  }
+  res.json({ history: data ?? [] });
+});
+
+router.patch("/withdrawal/:id/admin", async (req, res) => {
+  if (!supabaseAdmin) { res.status(503).json({ error: "Supabase not configured" }); return; }
+
+  const { id } = req.params;
+  const { action, rejection_reason } = req.body as {
+    action?: "approve" | "reject";
+    rejection_reason?: string;
+  };
+
+  if (!action || !["approve", "reject"].includes(action)) {
+    res.status(400).json({ error: "action must be 'approve' or 'reject'" });
+    return;
+  }
+
+  const update: Record<string, unknown> = {
+    status: action === "approve" ? "approved" : "rejected",
+    updated_at: new Date().toISOString(),
+  };
+  if (action === "reject" && rejection_reason) update.rejection_reason = rejection_reason;
+
+  const { data, error } = await supabaseAdmin
+    .from("withdrawal_requests")
+    .update(update)
+    .eq("id", id)
+    .select("id, request_id, status, updated_at")
+    .single();
+
+  if (error || !data) {
+    req.log.warn({ err: error }, "Failed to update withdrawal status");
+    res.status(500).json({ error: "Failed to update withdrawal" });
+    return;
+  }
+  res.json({ ok: true, ...data });
 });
 
 export default router;

@@ -7,6 +7,8 @@ export default function DriverLayout() {
       <Stack screenOptions={{ headerShown: false, animation: "slide_from_right" }}>
         <Stack.Screen name="login" />
         <Stack.Screen name="index" />
+        <Stack.Screen name="earnings" />
+        <Stack.Screen name="withdraw" options={{ animation: "slide_from_bottom" }} />
       </Stack>
     </DriverAuthProvider>
   );

@@ -20,6 +20,8 @@ export interface DriverProfile {
   rating: number;
   total_rides: number;
   is_online: boolean;
+  prefers_ride: boolean;
+  prefers_delivery: boolean;
 }
 
 interface DriverAuthContextValue {

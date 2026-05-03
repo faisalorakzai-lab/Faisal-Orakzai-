@@ -10,6 +10,7 @@ import {
   Platform,
   ScrollView,
   StyleSheet,
+  Switch,
   Text,
   TouchableOpacity,
   View,
@@ -23,8 +24,11 @@ const GOLD = "#C9A84C";
 const GOLD_BRIGHT = "#FFD700";
 const ACCEPT_GREEN = "#30D158";
 const DECLINE_RED = "#FF3B30";
+const SILVER = "#B0B8C8";
 const POLL_MS = 4000;
 const TIMER_SECONDS = 30;
+
+type ServiceType = "ride" | "delivery";
 
 type PendingRide = {
   id: string;
@@ -35,16 +39,16 @@ type PendingRide = {
   ride_type: string;
   payment_method: string;
   driver_id?: string | null;
+  service_type?: ServiceType;
+  package_type?: string;
+  receiver_name?: string;
+  receiver_contact?: string;
 };
 
 function useLoopingPulse(active: boolean) {
   const pulse = useRef(new Animated.Value(0)).current;
   useEffect(() => {
-    if (!active) {
-      pulse.stopAnimation();
-      pulse.setValue(0);
-      return;
-    }
+    if (!active) { pulse.stopAnimation(); pulse.setValue(0); return; }
     const animation = Animated.loop(
       Animated.sequence([
         Animated.timing(pulse, { toValue: 1, duration: 1100, useNativeDriver: true, easing: Easing.out(Easing.ease) }),
@@ -57,12 +61,10 @@ function useLoopingPulse(active: boolean) {
   return pulse;
 }
 
-function CircularCountdown({ seconds }: { seconds: number }) {
-  const radius = 38;
-  const progress = seconds / TIMER_SECONDS;
-  const dashScale = 1 - progress;
-  const color = seconds > 15 ? ACCEPT_GREEN : seconds > 8 ? GOLD : DECLINE_RED;
-
+function CircularCountdown({ seconds, isDelivery }: { seconds: number; isDelivery?: boolean }) {
+  const accentColor = isDelivery ? SILVER : GOLD_BRIGHT;
+  const color = seconds > 15 ? ACCEPT_GREEN : seconds > 8 ? (isDelivery ? SILVER : GOLD) : DECLINE_RED;
+  const dashScale = 1 - seconds / TIMER_SECONDS;
   return (
     <View style={circleStyles.wrap}>
       <View style={circleStyles.track} />
@@ -84,45 +86,34 @@ const circleStyles = StyleSheet.create({
   label: { fontSize: 9, fontFamily: "Inter_700Bold", color: "#8A8A8A", letterSpacing: 1.4 },
 });
 
-function RidePing() {
+function RidePing({ color = GOLD }: { color?: string }) {
   const pulse = useLoopingPulse(true);
   return (
     <View style={pingStyles.wrap}>
-      <Animated.View
-        style={[
-          pingStyles.ring,
-          {
-            opacity: pulse.interpolate({ inputRange: [0, 1], outputRange: [0.6, 0] }),
-            transform: [{ scale: pulse.interpolate({ inputRange: [0, 1], outputRange: [1, 2.7] }) }],
-          },
-        ]}
-      />
-      <View style={pingStyles.dot} />
+      <Animated.View style={[pingStyles.ring, { backgroundColor: color, opacity: pulse.interpolate({ inputRange: [0, 1], outputRange: [0.6, 0] }), transform: [{ scale: pulse.interpolate({ inputRange: [0, 1], outputRange: [1, 2.7] }) }] }]} />
+      <View style={[pingStyles.dot, { backgroundColor: color }]} />
     </View>
   );
 }
 
 const pingStyles = StyleSheet.create({
   wrap: { width: 18, height: 18, alignItems: "center", justifyContent: "center" },
-  ring: { position: "absolute", width: 18, height: 18, borderRadius: 9, backgroundColor: GOLD },
-  dot: { width: 10, height: 10, borderRadius: 5, backgroundColor: GOLD_BRIGHT },
+  ring: { position: "absolute", width: 18, height: 18, borderRadius: 9 },
+  dot: { width: 10, height: 10, borderRadius: 5 },
 });
 
-function RideRequestOverlay({
-  ride,
-  visible,
-  onAccept,
-  onReject,
-}: {
-  ride: PendingRide | null;
-  visible: boolean;
-  onAccept: () => void;
-  onReject: () => void;
+function RideRequestOverlay({ ride, visible, onAccept, onReject }: {
+  ride: PendingRide | null; visible: boolean; onAccept: () => void; onReject: () => void;
 }) {
   const insets = useSafeAreaInsets();
   const [seconds, setSeconds] = useState(TIMER_SECONDS);
   const slideY = useRef(new Animated.Value(500)).current;
   const intervalRef = useRef<ReturnType<typeof setInterval> | null>(null);
+
+  const isDelivery = ride?.service_type === "delivery";
+  const accentColor = isDelivery ? SILVER : GOLD_BRIGHT;
+  const accentDim = isDelivery ? "rgba(176,184,200,0.25)" : "rgba(255,215,0,0.18)";
+  const headerTitle = isDelivery ? "New Delivery Request!" : "New Ride Request!";
 
   useEffect(() => {
     if (!visible || !ride) {
@@ -135,18 +126,13 @@ function RideRequestOverlay({
     Animated.spring(slideY, { toValue: 0, useNativeDriver: true, speed: 15, bounciness: 5 }).start();
     intervalRef.current = setInterval(() => {
       setSeconds((current) => {
-        if (current <= 1) {
-          onReject();
-          return 0;
-        }
+        if (current <= 1) { onReject(); return 0; }
         if (current === 15) Haptics.impactAsync(Haptics.ImpactFeedbackStyle.Medium);
         if (current <= 5) Haptics.impactAsync(Haptics.ImpactFeedbackStyle.Light);
         return current - 1;
       });
     }, 1000);
-    return () => {
-      if (intervalRef.current) clearInterval(intervalRef.current);
-    };
+    return () => { if (intervalRef.current) clearInterval(intervalRef.current); };
   }, [visible, ride, slideY, onReject]);
 
   if (!ride) return null;
@@ -154,40 +140,65 @@ function RideRequestOverlay({
   return (
     <Modal visible={visible} transparent animationType="none">
       <View style={overlayStyles.backdrop}>
-        <Animated.View style={[overlayStyles.sheet, { transform: [{ translateY: slideY }], paddingBottom: insets.bottom + 20 }]}>
+        <Animated.View style={[
+          overlayStyles.sheet,
+          { transform: [{ translateY: slideY }], paddingBottom: insets.bottom + 20, borderColor: accentDim },
+        ]}>
           <View style={overlayStyles.headerRow}>
             <View style={overlayStyles.headerTitleWrap}>
-              <RidePing />
-              <Text style={overlayStyles.headerTitle}>New Ride Request!</Text>
+              <RidePing color={isDelivery ? SILVER : GOLD_BRIGHT} />
+              <Text style={overlayStyles.headerTitle}>{headerTitle}</Text>
+            </View>
+            <View style={[overlayStyles.typePill, { backgroundColor: isDelivery ? "rgba(176,184,200,0.12)" : "rgba(255,215,0,0.12)", borderColor: isDelivery ? "rgba(176,184,200,0.3)" : "rgba(255,215,0,0.3)" }]}>
+              <Feather name={isDelivery ? "package" : "navigation"} size={11} color={accentColor} />
+              <Text style={[overlayStyles.typePillText, { color: accentColor }]}>{isDelivery ? "DELIVERY" : "RIDE"}</Text>
             </View>
             <TouchableOpacity style={overlayStyles.rejectCorner} onPress={onReject} activeOpacity={0.8}>
               <Feather name="x" size={18} color="#FFFFFF" />
             </TouchableOpacity>
           </View>
 
-          <View style={overlayStyles.headerGlow} />
+          <View style={[overlayStyles.headerGlow, { backgroundColor: isDelivery ? "rgba(176,184,200,0.35)" : "rgba(255,215,0,0.5)" }]} />
 
           <View style={overlayStyles.routeCard}>
             <View style={overlayStyles.routeRow}>
-              <Feather name="map-pin" size={15} color={GOLD} />
+              <Feather name="map-pin" size={15} color={accentColor} />
               <View style={{ flex: 1 }}>
-                <Text style={overlayStyles.routeLabel}>Pickup</Text>
+                <Text style={overlayStyles.routeLabel}>{isDelivery ? "Pickup / Sender" : "Pickup"}</Text>
                 <Text style={overlayStyles.routeText} numberOfLines={2}>{ride.pickup_address}</Text>
               </View>
             </View>
             <View style={overlayStyles.routeDivider} />
             <View style={overlayStyles.routeRow}>
-              <Feather name="navigation" size={15} color="#FFFFFF" />
+              <Feather name={isDelivery ? "package" : "navigation"} size={15} color="#FFFFFF" />
               <View style={{ flex: 1 }}>
-                <Text style={overlayStyles.routeLabel}>Drop</Text>
+                <Text style={overlayStyles.routeLabel}>{isDelivery ? "Drop-off / Receiver" : "Drop"}</Text>
                 <Text style={overlayStyles.routeText} numberOfLines={2}>{ride.dropoff_address}</Text>
               </View>
             </View>
           </View>
 
-          <View style={overlayStyles.moneyCard}>
-            <Text style={overlayStyles.moneyLabel}>Fare</Text>
-            <Text style={overlayStyles.moneyValue}>{ride.total_fare.toLocaleString()} PKR</Text>
+          {/* Delivery-specific: package info */}
+          {isDelivery && (
+            <View style={overlayStyles.deliveryCard}>
+              <View style={overlayStyles.deliveryRow}>
+                <Feather name="box" size={14} color={SILVER} />
+                <Text style={overlayStyles.deliveryLabel}>Package Type</Text>
+                <Text style={overlayStyles.deliveryVal}>{ride.package_type ?? "Standard Parcel"}</Text>
+              </View>
+              {(ride.receiver_name || ride.receiver_contact) && (
+                <View style={overlayStyles.deliveryRow}>
+                  <Feather name="user" size={14} color={SILVER} />
+                  <Text style={overlayStyles.deliveryLabel}>Receiver</Text>
+                  <Text style={overlayStyles.deliveryVal}>{ride.receiver_name ?? ""}{ride.receiver_contact ? ` · ${ride.receiver_contact}` : ""}</Text>
+                </View>
+              )}
+            </View>
+          )}
+
+          <View style={[overlayStyles.moneyCard, { backgroundColor: isDelivery ? "rgba(176,184,200,0.07)" : "rgba(255,215,0,0.1)", borderColor: isDelivery ? "rgba(176,184,200,0.2)" : "rgba(255,215,0,0.3)" }]}>
+            <Text style={[overlayStyles.moneyLabel, { color: accentColor }]}>Fare</Text>
+            <Text style={[overlayStyles.moneyValue, { color: accentColor }]}>{ride.total_fare.toLocaleString()} PKR</Text>
           </View>
 
           <View style={overlayStyles.metaRow}>
@@ -195,11 +206,11 @@ function RideRequestOverlay({
               <Text style={overlayStyles.metaLabel}>Distance</Text>
               <Text style={overlayStyles.metaValue}>{ride.distance_km.toFixed(1)} km</Text>
             </View>
-            <CircularCountdown seconds={seconds} />
+            <CircularCountdown seconds={seconds} isDelivery={isDelivery} />
           </View>
 
-          <TouchableOpacity style={overlayStyles.acceptBtn} onPress={onAccept} activeOpacity={0.9}>
-            <Text style={overlayStyles.acceptBtnText}>ACCEPT</Text>
+          <TouchableOpacity style={[overlayStyles.acceptBtn, { backgroundColor: accentColor, shadowColor: accentColor }]} onPress={onAccept} activeOpacity={0.9}>
+            <Text style={overlayStyles.acceptBtnText}>{isDelivery ? "ACCEPT DELIVERY" : "ACCEPT"}</Text>
           </TouchableOpacity>
 
           <TouchableOpacity style={overlayStyles.rejectBtn} onPress={onReject} activeOpacity={0.8}>
@@ -213,25 +224,31 @@ function RideRequestOverlay({
 
 const overlayStyles = StyleSheet.create({
   backdrop: { flex: 1, backgroundColor: "rgba(0,0,0,0.88)", justifyContent: "flex-end" },
-  sheet: { backgroundColor: "#050505", borderTopLeftRadius: 28, borderTopRightRadius: 28, padding: 20, gap: 16, borderWidth: 1, borderColor: "rgba(255,215,0,0.18)" },
-  headerRow: { flexDirection: "row", alignItems: "center", justifyContent: "space-between" },
-  headerTitleWrap: { flexDirection: "row", alignItems: "center", gap: 10 },
-  headerTitle: { color: "#FFFFFF", fontSize: 24, fontFamily: "Inter_700Bold" },
+  sheet: { backgroundColor: "#050505", borderTopLeftRadius: 28, borderTopRightRadius: 28, padding: 20, gap: 14, borderWidth: 1 },
+  headerRow: { flexDirection: "row", alignItems: "center", gap: 8 },
+  headerTitleWrap: { flexDirection: "row", alignItems: "center", gap: 10, flex: 1 },
+  headerTitle: { color: "#FFFFFF", fontSize: 20, fontFamily: "Inter_700Bold", flex: 1 },
+  typePill: { flexDirection: "row", alignItems: "center", gap: 4, borderRadius: 20, borderWidth: 1, paddingHorizontal: 8, paddingVertical: 4 },
+  typePillText: { fontSize: 9, fontFamily: "Inter_700Bold", letterSpacing: 1 },
   rejectCorner: { width: 34, height: 34, borderRadius: 17, alignItems: "center", justifyContent: "center", backgroundColor: "rgba(255,255,255,0.08)" },
-  headerGlow: { height: 2, borderRadius: 1, backgroundColor: "rgba(255,215,0,0.5)", shadowColor: GOLD_BRIGHT, shadowOpacity: 0.8, shadowRadius: 14, shadowOffset: { width: 0, height: 0 } },
+  headerGlow: { height: 2, borderRadius: 1, shadowOpacity: 0.8, shadowRadius: 14, shadowOffset: { width: 0, height: 0 } },
   routeCard: { backgroundColor: "#0D0D0D", borderRadius: 18, padding: 16, gap: 14, borderWidth: 1, borderColor: "rgba(255,255,255,0.08)" },
   routeRow: { flexDirection: "row", alignItems: "flex-start", gap: 12 },
   routeLabel: { color: "#888888", fontSize: 9, fontFamily: "Inter_700Bold", letterSpacing: 1.4, textTransform: "uppercase", marginBottom: 4 },
   routeText: { color: "#FFFFFF", fontSize: 15, fontFamily: "Inter_500Medium", lineHeight: 21 },
-  routeDivider: { height: 1, backgroundColor: "rgba(255,215,0,0.18)" },
-  moneyCard: { backgroundColor: "rgba(255,215,0,0.1)", borderRadius: 18, paddingVertical: 16, paddingHorizontal: 18, borderWidth: 1, borderColor: "rgba(255,215,0,0.3)" },
-  moneyLabel: { color: GOLD, fontSize: 10, fontFamily: "Inter_700Bold", textTransform: "uppercase", letterSpacing: 2, marginBottom: 4 },
-  moneyValue: { color: GOLD_BRIGHT, fontSize: 34, fontFamily: "Inter_700Bold" },
+  routeDivider: { height: 1, backgroundColor: "rgba(255,255,255,0.08)" },
+  deliveryCard: { backgroundColor: "#0D0D0D", borderRadius: 14, borderWidth: 1, borderColor: "rgba(176,184,200,0.12)", padding: 12, gap: 10 },
+  deliveryRow: { flexDirection: "row", alignItems: "center", gap: 8 },
+  deliveryLabel: { fontSize: 11, fontFamily: "Inter_500Medium", color: "#666", flex: 1 },
+  deliveryVal: { fontSize: 13, fontFamily: "Inter_700Bold", color: SILVER },
+  moneyCard: { borderRadius: 18, paddingVertical: 14, paddingHorizontal: 18, borderWidth: 1 },
+  moneyLabel: { fontSize: 10, fontFamily: "Inter_700Bold", textTransform: "uppercase", letterSpacing: 2, marginBottom: 4 },
+  moneyValue: { fontSize: 30, fontFamily: "Inter_700Bold" },
   metaRow: { flexDirection: "row", alignItems: "center", justifyContent: "space-between", gap: 12 },
   metaBox: { flex: 1, backgroundColor: "#0D0D0D", borderRadius: 16, padding: 14, borderWidth: 1, borderColor: "rgba(255,255,255,0.07)" },
   metaLabel: { color: "#888888", fontSize: 9, fontFamily: "Inter_700Bold", letterSpacing: 1.4, textTransform: "uppercase", marginBottom: 6 },
   metaValue: { color: "#FFFFFF", fontSize: 17, fontFamily: "Inter_700Bold" },
-  acceptBtn: { backgroundColor: GOLD_BRIGHT, borderRadius: 20, alignItems: "center", paddingVertical: 16, shadowColor: GOLD_BRIGHT, shadowOpacity: 0.45, shadowRadius: 20, shadowOffset: { width: 0, height: 0 } },
+  acceptBtn: { borderRadius: 20, alignItems: "center", paddingVertical: 16, shadowOpacity: 0.45, shadowRadius: 20, shadowOffset: { width: 0, height: 0 } },
   acceptBtnText: { color: "#040404", fontSize: 18, fontFamily: "Inter_700Bold", letterSpacing: 2 },
   rejectBtn: { alignItems: "center", paddingVertical: 8 },
   rejectBtnText: { color: "#A1A1A1", fontSize: 13, fontFamily: "Inter_500Medium" },
@@ -259,15 +276,20 @@ function BottomNav({ active }: { active: string }) {
   const items = [
     { key: "home", label: "Home", icon: "home" },
     { key: "earnings", label: "Earnings", icon: "dollar-sign" },
-    { key: "rating", label: "Rating", icon: "star" },
+    { key: "withdraw", label: "Withdraw", icon: "arrow-up-circle" },
     { key: "profile", label: "Profile", icon: "user" },
   ] as const;
   return (
     <View style={navStyles.wrap}>
       {items.map((item) => {
         const on = active === item.key;
+        function handleNav() {
+          if (item.key === "earnings") router.push("/driver/earnings" as never);
+          else if (item.key === "withdraw") router.push("/driver/withdraw" as never);
+          else router.push("/driver" as never);
+        }
         return (
-          <TouchableOpacity key={item.key} style={navStyles.item} activeOpacity={0.8} onPress={() => router.push((item.key === "earnings" ? "/driver/earnings" : "/driver") as never)}>
+          <TouchableOpacity key={item.key} style={navStyles.item} activeOpacity={0.8} onPress={handleNav}>
             <Feather name={item.icon as any} size={18} color={on ? GOLD_BRIGHT : "#666666"} />
             <Text style={[navStyles.label, { color: on ? GOLD_BRIGHT : "#666666" }]}>{item.label}</Text>
           </TouchableOpacity>
@@ -283,6 +305,52 @@ const navStyles = StyleSheet.create({
   label: { fontSize: 10, fontFamily: "Inter_500Medium" },
 });
 
+// ── Service Preference Toggle ────────────────────────────────────────────────
+
+function ServiceToggle({
+  label,
+  sub,
+  icon,
+  value,
+  onChange,
+  accentColor,
+}: {
+  label: string;
+  sub: string;
+  icon: string;
+  value: boolean;
+  onChange: (v: boolean) => void;
+  accentColor: string;
+}) {
+  return (
+    <View style={[toggleStyles.row, value && { borderColor: accentColor + "44", backgroundColor: accentColor + "05" }]}>
+      <View style={[toggleStyles.iconBox, { backgroundColor: value ? accentColor + "18" : "rgba(255,255,255,0.05)" }]}>
+        <Feather name={icon as any} size={18} color={value ? accentColor : "#555"} />
+      </View>
+      <View style={{ flex: 1 }}>
+        <Text style={[toggleStyles.label, value && { color: "#FFFFFF" }]}>{label}</Text>
+        <Text style={toggleStyles.sub}>{sub}</Text>
+      </View>
+      <Switch
+        value={value}
+        onValueChange={(v) => { Haptics.impactAsync(Haptics.ImpactFeedbackStyle.Light); onChange(v); }}
+        trackColor={{ false: "#1A1A1A", true: accentColor + "55" }}
+        thumbColor={value ? accentColor : "#333"}
+        ios_backgroundColor="#1A1A1A"
+      />
+    </View>
+  );
+}
+
+const toggleStyles = StyleSheet.create({
+  row: { flexDirection: "row", alignItems: "center", gap: 14, backgroundColor: "#0D0D0D", borderRadius: 16, borderWidth: 1, borderColor: "rgba(255,255,255,0.07)", padding: 14 },
+  iconBox: { width: 40, height: 40, borderRadius: 20, alignItems: "center", justifyContent: "center" },
+  label: { fontSize: 15, fontFamily: "Inter_600SemiBold", color: "#888", marginBottom: 2 },
+  sub: { fontSize: 11, fontFamily: "Inter_400Regular", color: "#444" },
+});
+
+// ── Main Dashboard ───────────────────────────────────────────────────────────
+
 export default function DriverDashboard() {
   const insets = useSafeAreaInsets();
   const topPad = insets.top + (Platform.OS === "web" ? 67 : 16);
@@ -295,27 +363,23 @@ export default function DriverDashboard() {
   const [todayTrips, setTodayTrips] = useState(0);
   const [todayEarned, setTodayEarned] = useState(0);
   const [activeTab] = useState("home");
+  const [prefersRide, setPrefersRide] = useState(driver?.prefers_ride ?? true);
+  const [prefersDelivery, setPrefersDelivery] = useState(driver?.prefers_delivery ?? false);
+  const [savingPrefs, setSavingPrefs] = useState(false);
   const pollRef = useRef<ReturnType<typeof setInterval> | null>(null);
   const pendingRideRef = useRef<PendingRide | null>(null);
 
-  useEffect(() => {
-    pendingRideRef.current = pendingRide;
-  }, [pendingRide]);
+  useEffect(() => { pendingRideRef.current = pendingRide; }, [pendingRide]);
 
-  // Load today's real earnings from the API
   useEffect(() => {
     if (!token) return;
-    fetch(`${API_BASE}/api/otc/driver/earnings`, {
-      headers: { Authorization: `Bearer ${token}` },
-    })
+    fetch(`${API_BASE}/api/otc/driver/earnings`, { headers: { Authorization: `Bearer ${token}` } })
       .then((r) => r.ok ? r.json() as Promise<{ earnings?: Array<{ net_earnings: number; settled_at: string }> }> : Promise.resolve({ earnings: [] }))
       .then((data) => {
         const today = new Date();
         const todayItems = (data.earnings ?? []).filter((e) => {
           const d = new Date(e.settled_at);
-          return d.getFullYear() === today.getFullYear() &&
-            d.getMonth() === today.getMonth() &&
-            d.getDate() === today.getDate();
+          return d.getFullYear() === today.getFullYear() && d.getMonth() === today.getMonth() && d.getDate() === today.getDate();
         });
         setTodayTrips(todayItems.length);
         setTodayEarned(todayItems.reduce((s, e) => s + (e.net_earnings ?? 0), 0));
@@ -324,11 +388,10 @@ export default function DriverDashboard() {
   }, [token]);
 
   useEffect(() => {
-    if (!driver) {
-      router.replace("/driver/login");
-      return;
-    }
+    if (!driver) { router.replace("/driver/login"); return; }
     setIsOnline(driver.is_online);
+    setPrefersRide(driver.prefers_ride ?? true);
+    setPrefersDelivery(driver.prefers_delivery ?? false);
   }, [driver]);
 
   const triggerNotification = useCallback(async () => {
@@ -351,10 +414,7 @@ export default function DriverDashboard() {
   }, [token, openRideRequest]);
 
   useEffect(() => {
-    if (!isOnline) {
-      if (pollRef.current) clearInterval(pollRef.current);
-      return;
-    }
+    if (!isOnline) { if (pollRef.current) clearInterval(pollRef.current); return; }
     fetchLatestSearchingRide();
     pollRef.current = setInterval(fetchLatestSearchingRide, POLL_MS);
     return () => { if (pollRef.current) clearInterval(pollRef.current); };
@@ -364,19 +424,12 @@ export default function DriverDashboard() {
     if (!token || !isOnline || !supabase) return;
     const channel = supabase
       .channel(`driver-searching-${driver?.id ?? "driver"}`)
-      .on(
-        "postgres_changes",
-        { event: "INSERT", schema: "public", table: "ride_requests", filter: "status=eq.Searching" },
-        (payload) => {
-          const row = payload.new as PendingRide;
-          if (!pendingRideRef.current && row && row.driver_id == null) openRideRequest(row);
-        },
-      )
+      .on("postgres_changes", { event: "INSERT", schema: "public", table: "ride_requests", filter: "status=eq.Searching" }, (payload) => {
+        const row = payload.new as PendingRide;
+        if (!pendingRideRef.current && row && row.driver_id == null) openRideRequest(row);
+      })
       .subscribe();
-
-    return () => {
-      void supabase?.removeChannel(channel);
-    };
+    return () => { void supabase?.removeChannel(channel); };
   }, [token, isOnline, driver?.id, openRideRequest]);
 
   async function toggleOnline() {
@@ -390,13 +443,22 @@ export default function DriverDashboard() {
         headers: { "Content-Type": "application/json", Authorization: `Bearer ${token}` },
         body: JSON.stringify({ is_online: next }),
       });
-      if (res.ok) {
-        setIsOnline(next);
-        setDriverOnline(next, token);
-        if (next) Haptics.notificationAsync(Haptics.NotificationFeedbackType.Success);
-      }
+      if (res.ok) { setIsOnline(next); setDriverOnline(next, token); if (next) Haptics.notificationAsync(Haptics.NotificationFeedbackType.Success); }
     } catch {}
     setToggling(false);
+  }
+
+  async function updatePreferences(ride: boolean, delivery: boolean) {
+    if (!token || savingPrefs) return;
+    setSavingPrefs(true);
+    try {
+      await fetch(`${API_BASE}/api/otc/driver/preferences`, {
+        method: "PATCH",
+        headers: { "Content-Type": "application/json", Authorization: `Bearer ${token}` },
+        body: JSON.stringify({ prefers_ride: ride, prefers_delivery: delivery }),
+      });
+    } catch {}
+    setSavingPrefs(false);
   }
 
   async function handleAccept() {
@@ -435,7 +497,7 @@ export default function DriverDashboard() {
       <ScrollView contentContainerStyle={[styles.scroll, { paddingTop: topPad, paddingBottom: insets.bottom + 20 }]} showsVerticalScrollIndicator={false}>
         <View style={styles.topBar}>
           <View>
-            <Text style={[styles.greeting, { color: isOnline ? "#888888" : "#666666" }]}>{isOnline ? "Searching for nearby passengers" : "You are currently invisible"}</Text>
+            <Text style={[styles.greeting, { color: isOnline ? "#888888" : "#666666" }]}>{isOnline ? "Searching for requests" : "You are currently invisible"}</Text>
             <Text style={styles.driverName}>{driver.name}</Text>
           </View>
           <TouchableOpacity style={styles.logoutBtn} onPress={() => logout().then(() => router.replace("/driver/login"))} activeOpacity={0.8}>
@@ -461,7 +523,7 @@ export default function DriverDashboard() {
         <View style={[styles.earningsCard, { backgroundColor: "#0D0D0D", borderColor: "rgba(255,255,255,0.07)" }]}>
           <Text style={styles.cardLabel}>TODAY'S EARNINGS</Text>
           <Text style={[styles.earningsValue, { color: GOLD_BRIGHT }]}>{todayEarned.toLocaleString()} PKR</Text>
-          <TouchableOpacity activeOpacity={0.8}>
+          <TouchableOpacity onPress={() => router.push("/driver/earnings" as never)} activeOpacity={0.8}>
             <Text style={[styles.viewDetails, { color: GOLD }]}>View Details</Text>
           </TouchableOpacity>
         </View>
@@ -477,21 +539,52 @@ export default function DriverDashboard() {
           </View>
         </View>
 
+        {/* ── Service Preferences ────────────────────────────────────── */}
+        <View style={styles.prefsSection}>
+          <View style={styles.prefsTitleRow}>
+            <Text style={styles.prefsTitle}>Service Preferences</Text>
+            {savingPrefs && <ActivityIndicator size="small" color={GOLD} />}
+          </View>
+          <Text style={styles.prefsSub}>Toggle the types of work you accept</Text>
+          <View style={styles.prefsList}>
+            <ServiceToggle
+              label="Ride Mode"
+              sub="Accept passenger ride requests"
+              icon="users"
+              value={prefersRide}
+              accentColor={GOLD_BRIGHT}
+              onChange={(v) => {
+                if (!v && !prefersDelivery) { setPrefersDelivery(true); updatePreferences(false, true); }
+                else updatePreferences(v, prefersDelivery);
+                setPrefersRide(v);
+              }}
+            />
+            <ServiceToggle
+              label="Delivery Mode"
+              sub="Accept package delivery requests"
+              icon="package"
+              value={prefersDelivery}
+              accentColor={SILVER}
+              onChange={(v) => {
+                if (!v && !prefersRide) { setPrefersRide(true); updatePreferences(true, false); }
+                else updatePreferences(prefersRide, v);
+                setPrefersDelivery(v);
+              }}
+            />
+          </View>
+          {prefersRide && prefersDelivery && (
+            <View style={styles.multiTaskBadge}>
+              <Feather name="zap" size={12} color={GOLD} />
+              <Text style={styles.multiTaskText}>Multi-tasking ON — maximising your earnings</Text>
+            </View>
+          )}
+        </View>
+
+        {/* ── Online toggle ────────────────────────────────────────── */}
         <View style={styles.toggleSection}>
           <Text style={styles.statusNote}>{isOnline ? "Searching for nearby passengers" : "You are currently invisible"}</Text>
           <TouchableOpacity
-            style={[
-              styles.bigToggle,
-              {
-                backgroundColor: isOnline ? GOLD : "#141414",
-                borderColor: isOnline ? GOLD : "#2A2A2A",
-                shadowColor: isOnline ? GOLD : "transparent",
-                shadowRadius: isOnline ? 30 : 0,
-                shadowOpacity: isOnline ? 0.35 : 0,
-                shadowOffset: { width: 0, height: 0 },
-                elevation: isOnline ? 20 : 0,
-              },
-            ]}
+            style={[styles.bigToggle, { backgroundColor: isOnline ? GOLD : "#141414", borderColor: isOnline ? GOLD : "#2A2A2A", shadowColor: isOnline ? GOLD : "transparent", shadowRadius: isOnline ? 30 : 0, shadowOpacity: isOnline ? 0.35 : 0, shadowOffset: { width: 0, height: 0 }, elevation: isOnline ? 20 : 0 }]}
             onPress={toggleOnline}
             disabled={toggling}
             activeOpacity={0.88}
@@ -542,6 +635,13 @@ const styles = StyleSheet.create({
   statsGrid: { flexDirection: "row", gap: 10, marginBottom: 18 },
   statTile: { flex: 1, borderRadius: 16, borderWidth: 1, padding: 16, gap: 8, backgroundColor: "#0D0D0D", borderColor: "rgba(255,255,255,0.06)" },
   statBig: { fontSize: 28, fontFamily: "Inter_700Bold", color: "#FFFFFF" },
+  prefsSection: { marginBottom: 24 },
+  prefsTitleRow: { flexDirection: "row", alignItems: "center", gap: 10, marginBottom: 4 },
+  prefsTitle: { fontSize: 16, fontFamily: "Inter_700Bold", color: "#FFFFFF" },
+  prefsSub: { fontSize: 12, fontFamily: "Inter_400Regular", color: "#555", marginBottom: 12 },
+  prefsList: { gap: 10 },
+  multiTaskBadge: { flexDirection: "row", alignItems: "center", gap: 8, marginTop: 10, backgroundColor: "rgba(255,215,0,0.07)", borderRadius: 10, borderWidth: 1, borderColor: "rgba(255,215,0,0.2)", paddingHorizontal: 12, paddingVertical: 8 },
+  multiTaskText: { fontSize: 12, fontFamily: "Inter_500Medium", color: GOLD },
   toggleSection: { alignItems: "center", gap: 18, marginBottom: 20 },
   statusNote: { fontSize: 13, fontFamily: "Inter_500Medium", color: "#AAAAAA" },
   bigToggle: { width: 190, height: 190, borderRadius: 95, borderWidth: 2, alignItems: "center", justifyContent: "center", gap: 8 },

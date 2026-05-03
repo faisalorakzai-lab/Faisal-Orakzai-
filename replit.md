@@ -4,7 +4,7 @@
 
 Two products in one monorepo:
 1. **ORAKSER** — Corporate website for Orakzai Services (intellectual property & legal). Midnight Gold luxury theme, full admin panel.
-2. **OTC Super App** — Expo/React Native mobile Super App for Orakzai Transport Corporation. Phone/OTP auth, OTC Coins wallet, referral engine, Super App grid (Ride, Delivery, Rent-a-Car, Hotel). Full Sovereign Mobility Ecosystem with real-time integrations.
+2. **OTC Super App** — Expo/React Native mobile Super App for Orakzai Transport Corporation. Phone/OTP auth, OTC Coins wallet, referral engine, Super App grid (Ride, Delivery, Rent-a-Car, Hotel). Full Sovereign Mobility Ecosystem with real-time integrations. Multi-asset Vault withdrawal system (PKR/OKBOND, PIN gate, admin approval flow). Driver Service Mode selection (Ride/Delivery toggles, smart request filtering, delivery-specific request card).
 
 ## Stack
 

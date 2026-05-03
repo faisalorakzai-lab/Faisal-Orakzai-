@@ -26,6 +26,7 @@ const CATEGORY_ICONS: Record<Transaction["category"], string> = {
   hotel: "home",
   topup: "plus-circle",
   commission: "percent",
+  withdrawal: "arrow-up-circle",
 };
 
 const CATEGORY_LABELS: Record<Transaction["category"], string> = {
@@ -38,6 +39,7 @@ const CATEGORY_LABELS: Record<Transaction["category"], string> = {
   hotel: "Hotel",
   topup: "Top-up",
   commission: "Commission",
+  withdrawal: "Withdrawal",
 };
 
 function formatDate(ts: number): string {
@@ -109,9 +111,19 @@ export default function WalletScreen() {
         ]}
         ListHeaderComponent={() => (
           <View style={styles.header}>
-            <Text style={[styles.screenTitle, { color: colors.foreground }]}>
-              OTC Wallet
-            </Text>
+            <View style={styles.titleRow}>
+              <Text style={[styles.screenTitle, { color: colors.foreground }]}>
+                OTC Wallet
+              </Text>
+              <TouchableOpacity
+                style={[styles.withdrawBtn, { backgroundColor: colors.glassBackground, borderColor: colors.glassBorder }]}
+                onPress={() => { Haptics.impactAsync(Haptics.ImpactFeedbackStyle.Light); router.push("/services/withdraw" as never); }}
+                activeOpacity={0.8}
+              >
+                <Feather name="arrow-up-circle" size={14} color={colors.gold} />
+                <Text style={[styles.withdrawBtnText, { color: colors.gold }]}>Withdraw</Text>
+              </TouchableOpacity>
+            </View>
 
             <GlassCard variant="gold" style={styles.balanceCard}>
               <Text style={[styles.balanceLabel, { color: colors.mutedForeground }]}>
@@ -175,10 +187,28 @@ const styles = StyleSheet.create({
   root: { flex: 1 },
   scroll: { paddingHorizontal: 20 },
   header: { gap: 16, marginBottom: 8 },
+  titleRow: {
+    flexDirection: "row",
+    alignItems: "center",
+    justifyContent: "space-between",
+    marginBottom: 4,
+  },
   screenTitle: {
     fontSize: 26,
     fontFamily: "Inter_700Bold",
-    marginBottom: 4,
+  },
+  withdrawBtn: {
+    flexDirection: "row",
+    alignItems: "center",
+    gap: 6,
+    borderRadius: 10,
+    borderWidth: 1,
+    paddingHorizontal: 12,
+    paddingVertical: 7,
+  },
+  withdrawBtnText: {
+    fontSize: 13,
+    fontFamily: "Inter_600SemiBold",
   },
   balanceCard: {
     padding: 20,

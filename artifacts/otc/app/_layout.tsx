@@ -102,6 +102,10 @@ function RootLayoutNav() {
         name="services/settings"
         options={{ presentation: "card", headerShown: false, animation: "slide_from_right" }}
       />
+      <Stack.Screen
+        name="services/withdraw"
+        options={{ presentation: "card", headerShown: false, animation: "slide_from_bottom" }}
+      />
     </Stack>
   );
 }
