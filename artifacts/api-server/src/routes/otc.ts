@@ -73,20 +73,9 @@ router.post("/driver/otp-request", async (req, res) => {
   const { phone } = req.body as { phone?: string };
   if (!phone?.trim()) { res.status(400).json({ error: "phone is required" }); return; }
   const normalised = phone.trim().replace(/\s+/g, "");
-  const { data, error } = await supabaseAdmin
-    .from("drivers")
-    .select("id, name, phone, status")
-    .or(`phone.eq.${normalised},phone.eq.+92${normalised.replace(/^0/, "")}`)
-    .limit(1)
-    .single();
-  if (error || !data) {
-    res.status(404).json({ error: "No driver account found for this number. Contact Orakzai Services to register." });
-    return;
-  }
-  if (data.status === "inactive") {
-    res.status(403).json({ error: "Your driver account is inactive. Contact support." });
-    return;
-  }
+  const { data, error } = await supabaseAdmin.from("drivers").select("id, name, phone, status").or(`phone.eq.${normalised},phone.eq.+92${normalised.replace(/^0/, "")}`).limit(1).single();
+  if (error || !data) { res.status(404).json({ error: "No driver account found for this number. Contact Orakzai Services to register." }); return; }
+  if (data.status === "inactive") { res.status(403).json({ error: "Your driver account is inactive. Contact support." }); return; }
   const otp = String(Math.floor(100000 + Math.random() * 900000));
   const expires = Math.floor(Date.now() / 1000) + 10 * 60;
   driverOtps.set(normalised, { otp, expires });
@@ -97,24 +86,13 @@ router.post("/driver/otp-request", async (req, res) => {
 router.post("/driver/otp-verify", async (req, res) => {
   if (!supabaseAdmin) { res.status(503).json({ error: "Supabase not configured" }); return; }
   const { phone, otp } = req.body as { phone?: string; otp?: string };
-  if (!phone?.trim() || !otp?.trim()) {
-    res.status(400).json({ error: "phone and otp are required" }); return;
-  }
+  if (!phone?.trim() || !otp?.trim()) { res.status(400).json({ error: "phone and otp are required" }); return; }
   const normalised = phone.trim().replace(/\s+/g, "");
   const stored = driverOtps.get(normalised);
-  if (!stored || Math.floor(Date.now() / 1000) > stored.expires) {
-    res.status(401).json({ error: "OTP expired. Please request a new one." }); return;
-  }
-  if (stored.otp !== otp.trim()) {
-    res.status(401).json({ error: "Incorrect OTP. Please try again." }); return;
-  }
+  if (!stored || Math.floor(Date.now() / 1000) > stored.expires) { res.status(401).json({ error: "OTP expired. Please request a new one." }); return; }
+  if (stored.otp !== otp.trim()) { res.status(401).json({ error: "Incorrect OTP. Please try again." }); return; }
   driverOtps.delete(normalised);
-  const { data, error } = await supabaseAdmin
-    .from("drivers")
-    .select("id, name, phone, vehicle_model, plate_number, ride_type, rating, total_rides, is_online, status")
-    .or(`phone.eq.${normalised},phone.eq.+92${normalised.replace(/^0/, "")}`)
-    .limit(1)
-    .single();
+  const { data, error } = await supabaseAdmin.from("drivers").select("id, name, phone, vehicle_model, plate_number, ride_type, rating, total_rides, is_online, status").or(`phone.eq.${normalised},phone.eq.+92${normalised.replace(/^0/, "")}`).limit(1).single();
   if (error || !data) { res.status(404).json({ error: "Driver not found" }); return; }
   const token = mintDriverToken(data.id as string, data.phone as string);
   if (!token) { res.status(503).json({ error: "Auth service not configured" }); return; }
@@ -141,10 +119,7 @@ router.patch("/driver/toggle", async (req, res) => {
   if (!supabaseAdmin) { res.status(503).json({ error: "Supabase not configured" }); return; }
   const { is_online } = req.body as { is_online?: boolean };
   if (typeof is_online !== "boolean") { res.status(400).json({ error: "is_online (boolean) is required" }); return; }
-  const { error } = await supabaseAdmin
-    .from("drivers")
-    .update({ is_online, updated_at: new Date().toISOString() })
-    .eq("id", auth.claims.sub);
+  const { error } = await supabaseAdmin.from("drivers").update({ is_online, updated_at: new Date().toISOString() }).eq("id", auth.claims.sub);
   if (error) { res.status(500).json({ error: "Failed to update status" }); return; }
   res.json({ is_online });
 });
@@ -153,14 +128,7 @@ router.get("/driver/requests/searching", async (req, res) => {
   const auth = requireDriverAuth(req.headers.authorization);
   if ("error" in auth) { res.status(auth.status).json({ error: auth.error }); return; }
   if (!supabaseAdmin) { res.status(503).json({ error: "Supabase not configured" }); return; }
-  const { data, error } = await supabaseAdmin
-    .from("ride_requests")
-    .select("id, pickup_address, dropoff_address, total_fare, distance_km, ride_type, payment_method, driver_id, status")
-    .eq("status", "Searching")
-    .is("driver_id", null)
-    .order("created_at", { ascending: false })
-    .limit(1)
-    .maybeSingle();
+  const { data, error } = await supabaseAdmin.from("ride_requests").select("id, pickup_address, dropoff_address, total_fare, distance_km, ride_type, payment_method, driver_id, status").eq("status", "Searching").is("driver_id", null).order("created_at", { ascending: false }).limit(1).maybeSingle();
   if (error) { res.status(500).json({ error: "Failed to query pending rides" }); return; }
   res.json({ ride: data as DriverRide | null });
 });
@@ -171,24 +139,49 @@ router.patch("/driver/request/:id/respond", async (req, res) => {
   if (!supabaseAdmin) { res.status(503).json({ error: "Supabase not configured" }); return; }
   const { id } = req.params;
   const { action } = req.body as { action?: "accept" | "decline" };
-  if (action !== "accept" && action !== "decline") {
-    res.status(400).json({ error: "action must be 'accept' or 'decline'" });
-    return;
-  }
+  if (action !== "accept" && action !== "decline") { res.status(400).json({ error: "action must be 'accept' or 'decline'" }); return; }
   const driverId = auth.claims.sub;
   const newStatus = action === "accept" ? "Assigned" : "Searching";
-  const updatePayload: Record<string, unknown> = {
-    status: newStatus,
-    updated_at: new Date().toISOString(),
-  };
+  const updatePayload: Record<string, unknown> = { status: newStatus, updated_at: new Date().toISOString() };
   if (action === "accept") updatePayload.driver_id = driverId;
   if (action === "decline") updatePayload.driver_id = null;
   const { error } = await supabaseAdmin.from("ride_requests").update(updatePayload).eq("id", id);
-  if (error) {
-    res.status(500).json({ error: "Failed to update ride" });
-    return;
-  }
+  if (error) { res.status(500).json({ error: "Failed to update ride" }); return; }
   res.json({ status: newStatus });
+});
+
+router.patch("/driver/request/:id/state", async (req, res) => {
+  const auth = requireDriverAuth(req.headers.authorization);
+  if ("error" in auth) { res.status(auth.status).json({ error: auth.error }); return; }
+  if (!supabaseAdmin) { res.status(503).json({ error: "Supabase not configured" }); return; }
+  const { id } = req.params;
+  const { status } = req.body as { status?: "arrived" | "ongoing" | "completed" };
+  if (!["arrived", "ongoing", "completed"].includes(String(status))) { res.status(400).json({ error: "status must be arrived, ongoing, or completed" }); return; }
+  const { error } = await supabaseAdmin.from("ride_requests").update({ status, updated_at: new Date().toISOString() }).eq("id", id);
+  if (error) { res.status(500).json({ error: "Failed to update ride state" }); return; }
+  res.json({ status });
+});
+
+router.get("/driver/request/:id/chat", async (req, res) => {
+  const auth = requireDriverAuth(req.headers.authorization);
+  if ("error" in auth) { res.status(auth.status).json({ error: auth.error }); return; }
+  if (!supabaseAdmin) { res.status(503).json({ error: "Supabase not configured" }); return; }
+  const { id } = req.params;
+  const { data, error } = await supabaseAdmin.from("ride_chat_messages").select("id, ride_id, sender, message, created_at").eq("ride_id", id).order("created_at", { ascending: true }).limit(50);
+  if (error) { res.status(500).json({ error: "Failed to fetch chat" }); return; }
+  res.json({ messages: data ?? [] });
+});
+
+router.post("/driver/request/:id/chat", async (req, res) => {
+  const auth = requireDriverAuth(req.headers.authorization);
+  if ("error" in auth) { res.status(auth.status).json({ error: auth.error }); return; }
+  if (!supabaseAdmin) { res.status(503).json({ error: "Supabase not configured" }); return; }
+  const { id } = req.params;
+  const { message } = req.body as { message?: string };
+  if (!message?.trim()) { res.status(400).json({ error: "message is required" }); return; }
+  const { data, error } = await supabaseAdmin.from("ride_chat_messages").insert({ ride_id: id, sender: "driver", message: message.trim(), created_at: new Date().toISOString() }).select("id, ride_id, sender, message, created_at").single();
+  if (error || !data) { res.status(500).json({ error: "Failed to send chat" }); return; }
+  res.json({ message: data });
 });
 
 export default router;
