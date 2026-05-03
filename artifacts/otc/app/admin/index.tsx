@@ -1,18 +1,12 @@
 import { Feather } from "@expo/vector-icons";
 import { router } from "expo-router";
 import React, { useEffect, useMemo, useState } from "react";
-import {
-  ActivityIndicator,
-  FlatList,
-  Platform,
-  ScrollView,
-  StyleSheet,
-  Text,
-  TouchableOpacity,
-  View,
-} from "react-native";
+import { ActivityIndicator, Platform, ScrollView, StyleSheet, Text, TouchableOpacity, View } from "react-native";
 import { useSafeAreaInsets } from "react-native-safe-area-context";
-import { supabase } from "@/lib/supabase";
+
+const API_BASE = process.env.EXPO_PUBLIC_DOMAIN
+  ? `https://${process.env.EXPO_PUBLIC_DOMAIN}`
+  : "";
 
 const GOLD = "#FFD700";
 const GOLD_DIM = "rgba(255,215,0,0.18)";
@@ -110,9 +104,9 @@ export default function AdminOverviewScreen() {
     async function load() {
       try {
         const [statsRes, revenueRes, activityRes] = await Promise.all([
-          fetch(`${process.env.EXPO_PUBLIC_DOMAIN ?? ""}/api/otc/admin/overview`),
-          fetch(`${process.env.EXPO_PUBLIC_DOMAIN ?? ""}/api/otc/admin/revenue`),
-          fetch(`${process.env.EXPO_PUBLIC_DOMAIN ?? ""}/api/otc/admin/activity`),
+          fetch(`${API_BASE}/api/otc/admin/overview`),
+          fetch(`${API_BASE}/api/otc/admin/revenue`),
+          fetch(`${API_BASE}/api/otc/admin/activity`),
         ]);
         const statsJson = await statsRes.json().catch(() => FALLBACK_STATS);
         const revenueJson = await revenueRes.json().catch(() => ({ days: [] as DailyPoint[] }));
@@ -121,12 +115,20 @@ export default function AdminOverviewScreen() {
         setStats(statsJson.stats ?? FALLBACK_STATS);
         setSeries(revenueJson.days ?? []);
         setActivity(activityJson.items ?? []);
+      } catch {
+        if (alive) {
+          setStats(FALLBACK_STATS);
+          setSeries([]);
+          setActivity([]);
+        }
       } finally {
         if (alive) setLoading(false);
       }
     }
     load();
-    return () => { alive = false; };
+    return () => {
+      alive = false;
+    };
   }, []);
 
   const metrics = useMemo(() => METRICS.map((metric) => ({ ...metric, value: stats[metric.key] })), [stats]);
