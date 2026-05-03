@@ -267,7 +267,7 @@ function BottomNav({ active }: { active: string }) {
       {items.map((item) => {
         const on = active === item.key;
         return (
-          <TouchableOpacity key={item.key} style={navStyles.item} activeOpacity={0.8} onPress={() => router.push("/driver" as never)}>
+          <TouchableOpacity key={item.key} style={navStyles.item} activeOpacity={0.8} onPress={() => router.push((item.key === "earnings" ? "/driver/earnings" : "/driver") as never)}>
             <Feather name={item.icon as any} size={18} color={on ? GOLD_BRIGHT : "#666666"} />
             <Text style={[navStyles.label, { color: on ? GOLD_BRIGHT : "#666666" }]}>{item.label}</Text>
           </TouchableOpacity>
@@ -292,8 +292,8 @@ export default function DriverDashboard() {
   const [toggling, setToggling] = useState(false);
   const [pendingRide, setPendingRide] = useState<PendingRide | null>(null);
   const [showRequest, setShowRequest] = useState(false);
-  const [todayTrips, setTodayTrips] = useState(12);
-  const [todayEarned, setTodayEarned] = useState(2500);
+  const [todayTrips, setTodayTrips] = useState(0);
+  const [todayEarned, setTodayEarned] = useState(0);
   const [activeTab] = useState("home");
   const pollRef = useRef<ReturnType<typeof setInterval> | null>(null);
   const pendingRideRef = useRef<PendingRide | null>(null);
@@ -301,6 +301,27 @@ export default function DriverDashboard() {
   useEffect(() => {
     pendingRideRef.current = pendingRide;
   }, [pendingRide]);
+
+  // Load today's real earnings from the API
+  useEffect(() => {
+    if (!token) return;
+    fetch(`${API_BASE}/api/otc/driver/earnings`, {
+      headers: { Authorization: `Bearer ${token}` },
+    })
+      .then((r) => r.ok ? r.json() as Promise<{ earnings?: Array<{ net_earnings: number; settled_at: string }> }> : Promise.resolve({ earnings: [] }))
+      .then((data) => {
+        const today = new Date();
+        const todayItems = (data.earnings ?? []).filter((e) => {
+          const d = new Date(e.settled_at);
+          return d.getFullYear() === today.getFullYear() &&
+            d.getMonth() === today.getMonth() &&
+            d.getDate() === today.getDate();
+        });
+        setTodayTrips(todayItems.length);
+        setTodayEarned(todayItems.reduce((s, e) => s + (e.net_earnings ?? 0), 0));
+      })
+      .catch(() => {});
+  }, [token]);
 
   useEffect(() => {
     if (!driver) {

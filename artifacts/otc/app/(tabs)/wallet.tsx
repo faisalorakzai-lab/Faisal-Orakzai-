@@ -25,6 +25,7 @@ const CATEGORY_ICONS: Record<Transaction["category"], string> = {
   rental: "truck",
   hotel: "home",
   topup: "plus-circle",
+  commission: "percent",
 };
 
 const CATEGORY_LABELS: Record<Transaction["category"], string> = {
@@ -36,6 +37,7 @@ const CATEGORY_LABELS: Record<Transaction["category"], string> = {
   rental: "Car Rental",
   hotel: "Hotel",
   topup: "Top-up",
+  commission: "Commission",
 };
 
 function formatDate(ts: number): string {

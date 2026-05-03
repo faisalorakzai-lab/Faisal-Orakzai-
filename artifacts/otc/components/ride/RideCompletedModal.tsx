@@ -142,13 +142,35 @@ export function RideCompletedModal({
 
         <View style={styles.earningsCard}>
           <View style={styles.earningsRow}>
-            <Text style={styles.earningsKey}>Commission</Text>
+            <Text style={styles.earningsKey}>Total fare</Text>
+            <Text style={styles.earningsFare}>PKR {fare.toLocaleString()}</Text>
+          </View>
+          <View style={styles.earningsDivider} />
+          <View style={styles.earningsRow}>
+            <Text style={styles.earningsKey}>OTC commission ({Math.round(commissionRate * 100)}%)</Text>
             <Text style={styles.deductionText}>- PKR {commissionAmount.toLocaleString()}</Text>
           </View>
+          <View style={styles.earningsDivider} />
           <View style={styles.earningsRow}>
-            <Text style={styles.earningsKey}>Net earnings</Text>
+            <Text style={[styles.earningsKey, { color: "#ddd" }]}>Your net earnings</Text>
             <Text style={styles.netText}>PKR {netEarnings.toLocaleString()}</Text>
           </View>
+          {paymentMethod === "cash" && (
+            <View style={styles.cashDebtNote}>
+              <Feather name="alert-circle" size={12} color="#FF9500" />
+              <Text style={styles.cashDebtText}>
+                You collected the full fare in cash. Please submit PKR {commissionAmount.toLocaleString()} to OTC.
+              </Text>
+            </View>
+          )}
+          {paymentMethod === "wallet" && (
+            <View style={styles.walletCreditNote}>
+              <Feather name="check-circle" size={12} color="#30D158" />
+              <Text style={styles.walletCreditText}>
+                PKR {netEarnings.toLocaleString()} will be credited to your driver wallet.
+              </Text>
+            </View>
+          )}
         </View>
 
         {/* Details */}
@@ -334,6 +356,49 @@ const styles = StyleSheet.create({
     fontSize: 15,
     fontFamily: "Inter_700Bold",
     color: "#FFD700",
+  },
+  earningsFare: {
+    fontSize: 13,
+    fontFamily: "Inter_700Bold",
+    color: "#aaa",
+  },
+  earningsDivider: {
+    height: 1,
+    backgroundColor: "rgba(255,215,0,0.08)",
+  },
+  cashDebtNote: {
+    flexDirection: "row",
+    alignItems: "flex-start",
+    gap: 7,
+    backgroundColor: "rgba(255,149,0,0.08)",
+    borderRadius: 10,
+    padding: 10,
+    borderWidth: 1,
+    borderColor: "rgba(255,149,0,0.25)",
+  },
+  cashDebtText: {
+    fontSize: 11,
+    fontFamily: "Inter_400Regular",
+    color: "#aaa",
+    flex: 1,
+    lineHeight: 16,
+  },
+  walletCreditNote: {
+    flexDirection: "row",
+    alignItems: "flex-start",
+    gap: 7,
+    backgroundColor: "rgba(48,209,88,0.07)",
+    borderRadius: 10,
+    padding: 10,
+    borderWidth: 1,
+    borderColor: "rgba(48,209,88,0.22)",
+  },
+  walletCreditText: {
+    fontSize: 11,
+    fontFamily: "Inter_400Regular",
+    color: "#aaa",
+    flex: 1,
+    lineHeight: 16,
   },
   detailRow: {
     flexDirection: "row",

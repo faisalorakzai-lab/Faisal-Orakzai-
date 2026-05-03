@@ -150,6 +150,8 @@ router.patch("/driver/request/:id/respond", async (req, res) => {
   res.json({ status: newStatus });
 });
 
+const COMMISSION_RATE = Number(process.env.OTC_COMMISSION_RATE ?? 0.20);
+
 router.patch("/driver/request/:id/state", async (req, res) => {
   const auth = requireDriverAuth(req.headers.authorization);
   if ("error" in auth) { res.status(auth.status).json({ error: auth.error }); return; }
@@ -159,7 +161,70 @@ router.patch("/driver/request/:id/state", async (req, res) => {
   if (!["arrived", "ongoing", "completed"].includes(String(status))) { res.status(400).json({ error: "status must be arrived, ongoing, or completed" }); return; }
   const { error } = await supabaseAdmin.from("ride_requests").update({ status, updated_at: new Date().toISOString() }).eq("id", id);
   if (error) { res.status(500).json({ error: "Failed to update ride state" }); return; }
+
+  // Auto-settle commission when ride completes
+  if (status === "completed") {
+    try {
+      const { data: ride } = await supabaseAdmin
+        .from("ride_requests")
+        .select("total_fare, payment_method")
+        .eq("id", id)
+        .maybeSingle();
+      if (ride) {
+        const fare = Number(ride.total_fare) || 0;
+        const commissionAmount = Math.round(fare * COMMISSION_RATE);
+        const netEarnings = fare - commissionAmount;
+        const paymentMethod = String(ride.payment_method ?? "cash");
+        await supabaseAdmin.from("driver_earnings").insert({
+          driver_id: auth.claims.sub,
+          ride_id: id,
+          total_fare: fare,
+          commission_rate: COMMISSION_RATE,
+          commission_amount: commissionAmount,
+          net_earnings: netEarnings,
+          payment_method: paymentMethod,
+          is_cash_debt_paid: false,
+          settled_at: new Date().toISOString(),
+        }).then(() => {/* best-effort insert */});
+        res.json({
+          status,
+          settlement: {
+            totalFare: fare,
+            commissionRate: COMMISSION_RATE,
+            commissionAmount,
+            netEarnings,
+            paymentMethod,
+          },
+        });
+        return;
+      }
+    } catch { /* fall through to plain response */ }
+  }
+
   res.json({ status });
+});
+
+router.get("/driver/earnings", async (req, res) => {
+  const auth = requireDriverAuth(req.headers.authorization);
+  if ("error" in auth) { res.status(auth.status).json({ error: auth.error }); return; }
+  if (!supabaseAdmin) { res.status(503).json({ error: "Supabase not configured" }); return; }
+  try {
+    const { data, error } = await supabaseAdmin
+      .from("driver_earnings")
+      .select("id, ride_id, total_fare, commission_rate, commission_amount, net_earnings, payment_method, is_cash_debt_paid, settled_at")
+      .eq("driver_id", auth.claims.sub)
+      .order("settled_at", { ascending: false })
+      .limit(100);
+    if (error) {
+      // Table might not exist yet — return empty list gracefully
+      req.log.warn({ err: error }, "driver_earnings table query failed");
+      res.json({ earnings: [] });
+      return;
+    }
+    res.json({ earnings: data ?? [] });
+  } catch {
+    res.json({ earnings: [] });
+  }
 });
 
 router.get("/driver/request/:id/chat", async (req, res) => {

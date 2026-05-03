@@ -21,6 +21,9 @@ import { RideMapFull } from "@/components/ride/RideMapFull";
 import { clearActiveRide, getActiveRide } from "@/lib/activeRideStore";
 import { supabase } from "@/lib/supabase";
 import { useReferral } from "@/contexts/ReferralContext";
+import { useDriverAuth } from "@/contexts/DriverAuthContext";
+
+const API_BASE = process.env.EXPO_PUBLIC_DOMAIN ?? "";
 
 const { height: SCREEN_H } = Dimensions.get("window");
 const GOLD = "#FFD700";
@@ -109,12 +112,14 @@ export default function RideActiveScreen() {
   const insets = useSafeAreaInsets();
   const rideData = getActiveRide();
   const { completeFirstRide } = useReferral();
+  const { token: driverToken } = useDriverAuth();
 
   const [phase, setPhase] = useState<LivePhase>("assigned");
   const [carLat, setCarLat] = useState<number | null>(null);
   const [carLng, setCarLng] = useState<number | null>(null);
   const [etaSeconds, setEtaSeconds] = useState((rideData?.driver.eta ?? 5) * 60);
   const [showCompleted, setShowCompleted] = useState(false);
+  const [commissionRate, setCommissionRate] = useState(0.20);
   const [showChat, setShowChat] = useState(false);
   const [messages, setMessages] = useState<ChatMessage[]>([
     { id: "u1", role: "user", text: "Need help finding the car.", ts: Date.now() - 20000 },
@@ -229,7 +234,21 @@ export default function RideActiveScreen() {
       return;
     }
     Haptics.notificationAsync(Haptics.NotificationFeedbackType.Success);
-    if (supabase) {
+    // Call API state endpoint so settlement is triggered server-side
+    if (driverToken) {
+      fetch(`${API_BASE}/api/otc/driver/request/${rideId}/state`, {
+        method: "PATCH",
+        headers: { "Content-Type": "application/json", Authorization: `Bearer ${driverToken}` },
+        body: JSON.stringify({ status: "completed" }),
+      })
+        .then((r) => r.json() as Promise<{ status?: string; settlement?: { commissionRate: number } }>)
+        .then((data) => {
+          if (data.settlement?.commissionRate != null) {
+            setCommissionRate(data.settlement.commissionRate);
+          }
+        })
+        .catch(() => {});
+    } else if (supabase) {
       supabase.from("ride_requests").update({ status: "completed" }).eq("id", rideId).then(() => {});
     }
     transitionTo("completed");
@@ -349,7 +368,7 @@ export default function RideActiveScreen() {
       </View>
 
       <ChatModal visible={showChat} onClose={() => setShowChat(false)} messages={messages} onSend={sendChat} />
-      {showCompleted && <RideCompletedModal totalFare={totalFare > 0 ? totalFare : offeredPrice} offeredPrice={offeredPrice} rideTypeLabel={rideData.rideTypeLabel} paymentMethod={rideData.paymentMethod} onBackToHome={handleBackToHome} />}
+      {showCompleted && <RideCompletedModal totalFare={totalFare > 0 ? totalFare : offeredPrice} offeredPrice={offeredPrice} rideTypeLabel={rideData.rideTypeLabel} paymentMethod={rideData.paymentMethod} commissionRate={commissionRate} onBackToHome={handleBackToHome} />}
     </View>
   );
 }
