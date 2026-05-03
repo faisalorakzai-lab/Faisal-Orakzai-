@@ -26,7 +26,7 @@ import { RideProvider } from "@/contexts/RideContext";
 import { WalletProvider } from "@/contexts/WalletContext";
 
 if (Platform.OS !== "web") {
-  SplashScreen.preventAutoHideAsync();
+  SplashScreen.preventAutoHideAsync().catch(() => {});
 }
 
 const queryClient = new QueryClient();
@@ -134,12 +134,17 @@ export default function RootLayout() {
       setForceReady(true);
       return;
     }
+    if (fontsLoaded || fontError) {
+      setForceReady(true);
+      SplashScreen.hideAsync().catch(() => {});
+      return;
+    }
     const t = setTimeout(() => {
       setForceReady(true);
       SplashScreen.hideAsync().catch(() => {});
-    }, 3000);
+    }, 800);
     return () => clearTimeout(t);
-  }, []);
+  }, [fontsLoaded, fontError]);
 
   if (Platform.OS !== "web" && !fontsLoaded && !fontError && !forceReady) {
     return null;
