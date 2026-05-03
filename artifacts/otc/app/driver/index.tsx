@@ -550,7 +550,7 @@ export default function DriverDashboard() {
             <ServiceToggle
               label="Ride Mode"
               sub="Accept passenger ride requests"
-              icon="users"
+              icon="user"
               value={prefersRide}
               accentColor={GOLD_BRIGHT}
               onChange={(v) => {
@@ -562,7 +562,7 @@ export default function DriverDashboard() {
             <ServiceToggle
               label="Delivery Mode"
               sub="Accept package delivery requests"
-              icon="package"
+              icon="box"
               value={prefersDelivery}
               accentColor={SILVER}
               onChange={(v) => {

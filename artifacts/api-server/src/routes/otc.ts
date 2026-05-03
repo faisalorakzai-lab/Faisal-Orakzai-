@@ -129,7 +129,6 @@ router.get("/driver/requests/searching", async (req, res) => {
   if ("error" in auth) { res.status(auth.status).json({ error: auth.error }); return; }
   if (!supabaseAdmin) { res.status(503).json({ error: "Supabase not configured" }); return; }
 
-  // Fetch driver service preferences to filter request types
   let prefersRide = true;
   let prefersDelivery = false;
   try {
@@ -142,13 +141,7 @@ router.get("/driver/requests/searching", async (req, res) => {
       prefersRide = driverRow.prefers_ride ?? true;
       prefersDelivery = driverRow.prefers_delivery ?? false;
     }
-  } catch { /* fallback: accept rides */ }
-
-  // Build service_type filter
-  const acceptedTypes: string[] = [];
-  if (prefersRide) acceptedTypes.push("ride");
-  if (prefersDelivery) acceptedTypes.push("delivery");
-  if (acceptedTypes.length === 0) acceptedTypes.push("ride"); // safety fallback
+  } catch {}
 
   let query = supabaseAdmin
     .from("ride_requests")
@@ -158,9 +151,12 @@ router.get("/driver/requests/searching", async (req, res) => {
     .order("created_at", { ascending: false })
     .limit(1);
 
-  // Filter by preferred service type if the column exists
-  if (acceptedTypes.length === 1) {
-    query = query.or(`service_type.eq.${acceptedTypes[0]},service_type.is.null`);
+  if (prefersRide && !prefersDelivery) {
+    query = query.eq("service_type", "ride");
+  } else if (!prefersRide && prefersDelivery) {
+    query = query.eq("service_type", "delivery");
+  } else if (!prefersRide && !prefersDelivery) {
+    query = query.eq("service_type", "ride");
   }
 
   const { data, error } = await query.maybeSingle();
