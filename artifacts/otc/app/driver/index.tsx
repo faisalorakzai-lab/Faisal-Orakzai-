@@ -34,6 +34,7 @@ type PendingRide = {
   distance_km: number;
   ride_type: string;
   payment_method: string;
+  driver_id?: string | null;
 };
 
 function useLoopingPulse(active: boolean) {
@@ -353,7 +354,7 @@ export default function DriverDashboard() {
       .subscribe();
 
     return () => {
-      void supabase.removeChannel(channel);
+      void supabase?.removeChannel(channel);
     };
   }, [token, isOnline, driver?.id, openRideRequest]);
 

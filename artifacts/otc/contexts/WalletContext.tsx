@@ -24,7 +24,8 @@ export interface Transaction {
     | "delivery"
     | "rental"
     | "hotel"
-    | "topup";
+    | "topup"
+    | "commission";
 }
 
 interface WalletContextValue {

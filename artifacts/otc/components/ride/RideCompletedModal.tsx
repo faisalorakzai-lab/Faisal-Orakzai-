@@ -15,6 +15,7 @@ interface RideCompletedModalProps {
   offeredPrice: number;
   rideTypeLabel: string;
   paymentMethod: PaymentMethod;
+  commissionRate?: number;
   onBackToHome: () => void;
 }
 
@@ -23,6 +24,7 @@ export function RideCompletedModal({
   offeredPrice,
   rideTypeLabel,
   paymentMethod,
+  commissionRate = 0.2,
   onBackToHome,
 }: RideCompletedModalProps) {
   const fadeAnim   = useRef(new Animated.Value(0)).current;
@@ -71,6 +73,8 @@ export function RideCompletedModal({
   }, [fadeAnim, slideAnim, scaleAnim, checkScale, checkOpacity, glowAnim]);
 
   const fare = totalFare > 0 ? totalFare : offeredPrice;
+  const commissionAmount = Math.round(fare * commissionRate);
+  const netEarnings = Math.max(0, fare - commissionAmount);
 
   const payLabel = paymentMethod === "wallet" ? "OTC Wallet" : "Cash";
   const payIcon  = paymentMethod === "wallet" ? "credit-card" : "dollar-sign";
@@ -134,6 +138,17 @@ export function RideCompletedModal({
         <View style={styles.fareSection}>
           <Text style={styles.fareLabel}>TOTAL FARE</Text>
           <Text style={styles.fareAmount}>PKR {fare.toLocaleString()}</Text>
+        </View>
+
+        <View style={styles.earningsCard}>
+          <View style={styles.earningsRow}>
+            <Text style={styles.earningsKey}>Commission</Text>
+            <Text style={styles.deductionText}>- PKR {commissionAmount.toLocaleString()}</Text>
+          </View>
+          <View style={styles.earningsRow}>
+            <Text style={styles.earningsKey}>Net earnings</Text>
+            <Text style={styles.netText}>PKR {netEarnings.toLocaleString()}</Text>
+          </View>
         </View>
 
         {/* Details */}
@@ -290,6 +305,35 @@ const styles = StyleSheet.create({
     borderWidth: 1,
     borderColor: "rgba(255,255,255,0.05)",
     padding: 16,
+  },
+  earningsCard: {
+    width: "100%",
+    backgroundColor: "rgba(255,215,0,0.06)",
+    borderRadius: 16,
+    borderWidth: 1,
+    borderColor: "rgba(255,215,0,0.16)",
+    padding: 14,
+    gap: 8,
+  },
+  earningsRow: {
+    flexDirection: "row",
+    justifyContent: "space-between",
+    alignItems: "center",
+  },
+  earningsKey: {
+    fontSize: 13,
+    fontFamily: "Inter_400Regular",
+    color: "#bbb",
+  },
+  deductionText: {
+    fontSize: 13,
+    fontFamily: "Inter_700Bold",
+    color: "#FF5A5F",
+  },
+  netText: {
+    fontSize: 15,
+    fontFamily: "Inter_700Bold",
+    color: "#FFD700",
   },
   detailRow: {
     flexDirection: "row",

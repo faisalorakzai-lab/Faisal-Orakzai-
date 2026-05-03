@@ -21,6 +21,8 @@ interface OrderEntry {
   coinsEarned: number;
   coinsSpent: number;
   date: number;
+  commission?: number;
+  net?: number;
 }
 
 function txToOrder(tx: Transaction): OrderEntry | null {
@@ -42,6 +44,8 @@ function txToOrder(tx: Transaction): OrderEntry | null {
     coinsEarned: tx.type === "credit" ? tx.amount : 0,
     coinsSpent: tx.type === "debit" ? tx.amount : 0,
     date: tx.timestamp,
+    commission: tx.category === "commission" && tx.type === "debit" ? tx.amount : undefined,
+    net: tx.category === "ride" && tx.type === "credit" ? tx.amount : undefined,
   };
 }
 
@@ -126,6 +130,16 @@ export default function HistoryScreen() {
             {item.coinsSpent > 0 && (
               <Text style={[styles.coinsText, { color: colors.destructive }]}>
                 -{item.coinsSpent} OTC
+              </Text>
+            )}
+            {item.commission != null && (
+              <Text style={[styles.coinsText, { color: colors.destructive }]}>
+                Commission -{item.commission} PKR
+              </Text>
+            )}
+            {item.net != null && (
+              <Text style={[styles.coinsText, { color: colors.gold }]}>
+                Net {item.net} PKR
               </Text>
             )}
           </View>
