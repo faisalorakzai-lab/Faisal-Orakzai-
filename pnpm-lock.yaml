@@ -175,6 +175,9 @@ importers:
       '@workspace/db':
         specifier: workspace:*
         version: link:../../lib/db
+      ably:
+        specifier: ^2.21.0
+        version: 2.21.0(react-dom@19.1.0(react@19.1.0))(react@19.1.0)
       cookie-parser:
         specifier: ^1.4.7
         version: 1.4.7

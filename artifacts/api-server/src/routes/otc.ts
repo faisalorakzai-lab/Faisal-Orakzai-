@@ -1,6 +1,20 @@
 import { createHmac, timingSafeEqual } from "node:crypto";
 import { Router } from "express";
+import Ably from "ably";
 import { supabaseAdmin } from "../db/supabaseAdmin";
+
+const ABLY_API_KEY = process.env.ABLY_API_KEY ?? "";
+let ablyRest: Ably.Rest | null = null;
+if (ABLY_API_KEY) {
+  ablyRest = new Ably.Rest({ key: ABLY_API_KEY });
+}
+
+async function publishAbly(channel: string, event: string, data: unknown): Promise<void> {
+  if (!ablyRest) return;
+  try {
+    await ablyRest.channels.get(channel).publish(event, data);
+  } catch {}
+}
 
 const router = Router();
 
@@ -159,11 +173,12 @@ router.get("/admin/users", async (req, res) => {
   if (error) { res.status(500).json({ error: "Failed to fetch users" }); return; }
 
   const rows = (data ?? []) as AdminProfileRow[];
+  const db = supabaseAdmin!;
   const items = await Promise.all(rows.map(async (row) => {
     const [ridesTaken, walletRow, issues] = await Promise.all([
-      supabaseAdmin.from("ride_requests").select("id", { count: "exact", head: true }).eq("user_id", row.user_id),
-      supabaseAdmin.from("wallets").select("balance").eq("user_id", row.user_id).maybeSingle(),
-      supabaseAdmin.from("support_tickets").select("id, subject, status, created_at").eq("user_id", row.user_id).order("created_at", { ascending: false }).limit(5),
+      db.from("ride_requests").select("id", { count: "exact", head: true }).eq("user_id", row.user_id),
+      db.from("wallets").select("balance").eq("user_id", row.user_id).maybeSingle(),
+      db.from("support_tickets").select("id, subject, status, created_at").eq("user_id", row.user_id).order("created_at", { ascending: false }).limit(5),
     ]);
 
     return {
@@ -833,6 +848,233 @@ router.get("/admin/commission", async (req, res) => {
   }
   const { data: history } = await supabaseAdmin.from("commission_history").select("id, key, old_value, new_value, admin_name, changed_at").order("changed_at", { ascending: false }).limit(20);
   res.json({ rates, history: history ?? [] });
+});
+
+// ─── BIDDING ENGINE ─────────────────────────────────────────────────────────
+
+router.post("/bid/create", async (req, res) => {
+  const {
+    user_id, pickup_name, pickup_lat, pickup_lng,
+    dropoff_name, dropoff_lat, dropoff_lng,
+    distance_km, suggested_fare,
+  } = req.body as {
+    user_id?: string; pickup_name?: string; pickup_lat?: number; pickup_lng?: number;
+    dropoff_name?: string; dropoff_lat?: number; dropoff_lng?: number;
+    distance_km?: number; suggested_fare?: number;
+  };
+
+  if (!pickup_name || !dropoff_name || !suggested_fare) {
+    res.status(400).json({ error: "pickup_name, dropoff_name, suggested_fare are required" });
+    return;
+  }
+
+  const bid_id = `BID-${Date.now()}-${Math.random().toString(36).slice(2, 7).toUpperCase()}`;
+  const expires_at = new Date(Date.now() + 10 * 60 * 1000).toISOString();
+
+  if (supabaseAdmin) {
+    try {
+      await supabaseAdmin.from("ride_bids").insert({
+        id: bid_id,
+        user_id: user_id ?? null,
+        pickup_name: pickup_name ?? "Unknown",
+        pickup_lat: pickup_lat ?? 0,
+        pickup_lng: pickup_lng ?? 0,
+        dropoff_name: dropoff_name ?? "Unknown",
+        dropoff_lat: dropoff_lat ?? 0,
+        dropoff_lng: dropoff_lng ?? 0,
+        distance_km: distance_km ?? 0,
+        suggested_fare: suggested_fare,
+        status: "open",
+        expires_at,
+        created_at: new Date().toISOString(),
+        updated_at: new Date().toISOString(),
+      });
+    } catch {}
+  }
+
+  // Notify nearby drivers via Ably
+  await publishAbly("drivers:nearby", "bid:new", {
+    bid_id,
+    pickup_name,
+    dropoff_name,
+    distance_km,
+    suggested_fare,
+    expires_at,
+  });
+
+  req.log.info({ bid_id, suggested_fare }, "Ride bid created");
+  res.status(201).json({ bid_id, status: "open", expires_at });
+});
+
+router.get("/bid/:id", async (req, res) => {
+  const { id } = req.params;
+
+  if (!supabaseAdmin) {
+    res.json({ bid_id: id, status: "open", offers: [] });
+    return;
+  }
+
+  const [bidRes, offersRes] = await Promise.all([
+    supabaseAdmin.from("ride_bids").select("*").eq("id", id).maybeSingle(),
+    supabaseAdmin.from("bid_offers")
+      .select("*")
+      .eq("bid_id", id)
+      .order("created_at", { ascending: false }),
+  ]);
+
+  if (!bidRes.data) {
+    res.status(404).json({ error: "Bid not found" });
+    return;
+  }
+
+  res.json({ bid: bidRes.data, offers: offersRes.data ?? [] });
+});
+
+router.post("/bid/:id/driver-offer", async (req, res) => {
+  const { id } = req.params;
+  const auth = requireDriverAuth(req.headers.authorization);
+  if ("error" in auth) { res.status(auth.status).json({ error: auth.error }); return; }
+
+  const { offered_fare, eta } = req.body as { offered_fare?: number; eta?: number };
+  if (!offered_fare || offered_fare <= 0) {
+    res.status(400).json({ error: "offered_fare is required and must be positive" });
+    return;
+  }
+
+  const offer_id = `OFF-${Date.now()}-${Math.random().toString(36).slice(2, 7).toUpperCase()}`;
+
+  let driverName = "OTC Driver";
+  let driverPhone: string | null = null;
+  let driverVehicle: string | null = null;
+  let driverPlate: string | null = null;
+  let driverRating = 4.8;
+
+  if (supabaseAdmin) {
+    try {
+      const { data: d } = await supabaseAdmin
+        .from("drivers")
+        .select("name, phone, vehicle_model, plate_number, rating")
+        .eq("id", auth.claims.sub)
+        .maybeSingle();
+      if (d) {
+        driverName = d.name ?? driverName;
+        driverPhone = d.phone ?? null;
+        driverVehicle = d.vehicle_model ?? null;
+        driverPlate = d.plate_number ?? null;
+        driverRating = Number(d.rating ?? 4.8);
+      }
+
+      await supabaseAdmin.from("bid_offers").insert({
+        id: offer_id,
+        bid_id: id,
+        driver_id: auth.claims.sub,
+        driver_name: driverName,
+        driver_phone: driverPhone,
+        driver_vehicle: driverVehicle,
+        driver_plate: driverPlate,
+        driver_rating: driverRating,
+        offered_fare,
+        eta: eta ?? 5,
+        status: "pending",
+        created_at: new Date().toISOString(),
+      });
+    } catch {}
+  }
+
+  const offer = {
+    id: offer_id,
+    driver_id: auth.claims.sub,
+    driver_name: driverName,
+    driver_phone: driverPhone,
+    driver_vehicle: driverVehicle,
+    driver_plate: driverPlate,
+    driver_rating: driverRating,
+    offered_fare,
+    eta: eta ?? 5,
+    status: "pending",
+    created_at: new Date().toISOString(),
+  };
+
+  // Push offer to user in real-time via Ably
+  await publishAbly(`bid:${id}`, "bid:offer", offer);
+
+  req.log.info({ bid_id: id, driver_id: auth.claims.sub, offered_fare }, "Driver placed bid offer");
+  res.status(201).json({ offer_id, status: "pending" });
+});
+
+router.post("/bid/:id/user-accept", async (req, res) => {
+  const { id } = req.params;
+  const { offer_id } = req.body as { offer_id?: string };
+  if (!offer_id) { res.status(400).json({ error: "offer_id required" }); return; }
+
+  if (supabaseAdmin) {
+    try {
+      await Promise.all([
+        supabaseAdmin.from("ride_bids").update({ status: "accepted", updated_at: new Date().toISOString() }).eq("id", id),
+        supabaseAdmin.from("bid_offers").update({ status: "accepted" }).eq("id", offer_id),
+        supabaseAdmin.from("bid_offers").update({ status: "rejected" }).eq("bid_id", id).neq("id", offer_id),
+      ]);
+    } catch {}
+  }
+
+  await publishAbly(`bid:${id}`, "bid:accepted", { offer_id });
+
+  req.log.info({ bid_id: id, offer_id }, "User accepted bid offer");
+  res.json({ ok: true, status: "accepted" });
+});
+
+router.post("/bid/:id/user-reject", async (req, res) => {
+  const { id } = req.params;
+  const { offer_id } = req.body as { offer_id?: string };
+  if (!offer_id) { res.status(400).json({ error: "offer_id required" }); return; }
+
+  if (supabaseAdmin) {
+    try {
+      await supabaseAdmin.from("bid_offers").update({ status: "rejected" }).eq("id", offer_id);
+    } catch {}
+  }
+
+  await publishAbly(`bid:${id}`, "bid:offer_rejected", { offer_id });
+
+  res.json({ ok: true });
+});
+
+router.post("/bid/:id/cancel", async (req, res) => {
+  const { id } = req.params;
+
+  if (supabaseAdmin) {
+    try {
+      await supabaseAdmin.from("ride_bids").update({ status: "cancelled", updated_at: new Date().toISOString() }).eq("id", id);
+    } catch {}
+  }
+
+  await publishAbly(`bid:${id}`, "bid:cancelled", { bid_id: id });
+
+  req.log.info({ bid_id: id }, "Ride bid cancelled");
+  res.json({ ok: true });
+});
+
+// ─── DRIVER: BID NOTIFICATIONS ──────────────────────────────────────────────
+
+router.get("/driver/bids/nearby", async (req, res) => {
+  const auth = requireDriverAuth(req.headers.authorization);
+  if ("error" in auth) { res.status(auth.status).json({ error: auth.error }); return; }
+
+  if (!supabaseAdmin) {
+    res.json({ bids: [] });
+    return;
+  }
+
+  const { data, error } = await supabaseAdmin
+    .from("ride_bids")
+    .select("id, pickup_name, dropoff_name, distance_km, suggested_fare, expires_at, created_at")
+    .eq("status", "open")
+    .gt("expires_at", new Date().toISOString())
+    .order("created_at", { ascending: false })
+    .limit(10);
+
+  if (error) { req.log.warn({ err: error }, "ride_bids table not available"); res.json({ bids: [] }); return; }
+  res.json({ bids: data ?? [] });
 });
 
 router.post("/admin/commission/update", async (req, res) => {

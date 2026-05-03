@@ -207,15 +207,20 @@ export default function HomeScreen() {
         </TouchableOpacity>
 
         <TouchableOpacity
-          style={styles.referStrip}
-          onPress={() => router.push("/(tabs)/invite")}
+          style={styles.bidStrip}
+          onPress={() => {
+            Haptics.impactAsync(Haptics.ImpactFeedbackStyle.Medium);
+            router.push("/services/bid-ride");
+          }}
           activeOpacity={0.85}
         >
-          <MaterialCommunityIcons name="hand-coin" size={20} color={GOLD} />
+          <View style={styles.bidIconWrap}>
+            <MaterialCommunityIcons name="gavel" size={22} color="#000" />
+          </View>
           <View style={styles.referText}>
-            <Text style={styles.referTitle}>Place a Ride Bid</Text>
+            <Text style={styles.bidStripTitle}>BID A RIDE</Text>
             <Text style={styles.referSub}>
-              Offer below suggested fare and track live request status
+              Name your price · Drivers counter in real-time
             </Text>
           </View>
           <MaterialCommunityIcons name="chevron-right" size={18} color={GOLD} />
@@ -435,6 +440,34 @@ const styles = StyleSheet.create({
     fontFamily: "Inter_700Bold",
     color: "#555555",
     letterSpacing: 0.8,
+  },
+
+  /* Bid strip */
+  bidStrip: {
+    flexDirection: "row",
+    alignItems: "center",
+    backgroundColor: CARD_BG,
+    borderRadius: 14,
+    borderWidth: 1.5,
+    borderColor: "rgba(255,215,0,0.35)",
+    paddingHorizontal: 14,
+    paddingVertical: 14,
+    gap: 12,
+    marginBottom: 10,
+  },
+  bidIconWrap: {
+    width: 40,
+    height: 40,
+    borderRadius: 12,
+    backgroundColor: GOLD,
+    alignItems: "center",
+    justifyContent: "center",
+  },
+  bidStripTitle: {
+    fontSize: 14,
+    fontFamily: "Inter_700Bold",
+    color: GOLD,
+    letterSpacing: 0.5,
   },
 
   /* Refer strip */

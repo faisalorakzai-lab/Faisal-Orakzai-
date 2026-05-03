@@ -273,16 +273,17 @@ const mapStyles = StyleSheet.create({
 function BottomNav({ active }: { active: string }) {
   const items = [
     { key: "home", label: "Home", icon: "home" },
+    { key: "bids", label: "Bids", icon: "zap" },
     { key: "earnings", label: "Earnings", icon: "dollar-sign" },
     { key: "withdraw", label: "Withdraw", icon: "arrow-up-circle" },
-    { key: "profile", label: "Profile", icon: "user" },
   ] as const;
   return (
     <View style={navStyles.wrap}>
       {items.map((item) => {
         const on = active === item.key;
         function handleNav() {
-          if (item.key === "earnings") router.push("/driver/earnings" as never);
+          if (item.key === "bids") router.push("/driver/bids" as never);
+          else if (item.key === "earnings") router.push("/driver/earnings" as never);
           else if (item.key === "withdraw") router.push("/driver/withdraw" as never);
           else router.push("/driver" as never);
         }

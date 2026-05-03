@@ -13,6 +13,7 @@
     "@supabase/supabase-js": "^2.105.1",
     "@workspace/api-zod": "workspace:*",
     "@workspace/db": "workspace:*",
+    "ably": "^2.21.0",
     "cookie-parser": "^1.4.7",
     "cors": "^2",
     "drizzle-orm": "catalog:",
