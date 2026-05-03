@@ -614,4 +614,257 @@ router.patch("/withdrawal/:id/admin", async (req, res) => {
   res.json({ ok: true, ...data });
 });
 
+
+// ─── ADMIN: WALLET CONTROL ──────────────────────────────────────────────────
+
+router.get("/admin/wallet/search", async (req, res) => {
+  if (!supabaseAdmin) { res.status(503).json({ error: "Supabase not configured" }); return; }
+  const q = String(req.query.q ?? "").trim();
+  if (!q) { res.status(400).json({ error: "q param required" }); return; }
+
+  const [profilesRes, driversRes] = await Promise.all([
+    supabaseAdmin.from("profiles")
+      .select("user_id, name, phone, email")
+      .or(`name.ilike.%${q}%,phone.ilike.%${q}%,email.ilike.%${q}%,user_id.eq.${q}`)
+      .limit(10),
+    supabaseAdmin.from("drivers")
+      .select("id, name, phone")
+      .or(`name.ilike.%${q}%,phone.ilike.%${q}%,id.eq.${q}`)
+      .limit(10),
+  ]);
+
+  const userIds = (profilesRes.data ?? []).map((p) => p.user_id);
+  const driverIds = (driversRes.data ?? []).map((d) => d.id);
+  const allIds = [...new Set([...userIds, ...driverIds])];
+
+  if (allIds.length === 0) { res.json({ results: [] }); return; }
+
+  const { data: wallets } = await supabaseAdmin
+    .from("wallets")
+    .select("user_id, pkr_balance, okbond_balance")
+    .in("user_id", allIds);
+
+  const walletMap = Object.fromEntries((wallets ?? []).map((w) => [w.user_id, w]));
+
+  const results = [
+    ...(profilesRes.data ?? []).map((p) => ({
+      id: p.user_id,
+      name: p.name ?? "Unknown",
+      phone: p.phone ?? "—",
+      type: "user" as const,
+      pkr_balance: Number(walletMap[p.user_id]?.pkr_balance ?? 0),
+      okbond_balance: Number(walletMap[p.user_id]?.okbond_balance ?? 0),
+    })),
+    ...(driversRes.data ?? [])
+      .filter((d) => !userIds.includes(d.id))
+      .map((d) => ({
+        id: d.id,
+        name: d.name ?? "Unknown",
+        phone: d.phone ?? "—",
+        type: "driver" as const,
+        pkr_balance: Number(walletMap[d.id]?.pkr_balance ?? 0),
+        okbond_balance: Number(walletMap[d.id]?.okbond_balance ?? 0),
+      })),
+  ];
+
+  res.json({ results });
+});
+
+router.post("/admin/wallet/adjust", async (req, res) => {
+  if (!supabaseAdmin) { res.status(503).json({ error: "Supabase not configured" }); return; }
+  const { user_id, asset_type, action, amount, reason, admin_name } =
+    req.body as { user_id?: string; asset_type?: "PKR" | "OKBOND"; action?: "add" | "deduct"; amount?: number; reason?: string; admin_name?: string };
+
+  if (!user_id || !asset_type || !action || !amount || !reason?.trim()) {
+    res.status(400).json({ error: "user_id, asset_type, action, amount, reason are required" }); return;
+  }
+  if (!["PKR", "OKBOND"].includes(asset_type)) { res.status(400).json({ error: "asset_type must be PKR or OKBOND" }); return; }
+  if (!["add", "deduct"].includes(action)) { res.status(400).json({ error: "action must be add or deduct" }); return; }
+  if (amount <= 0) { res.status(400).json({ error: "amount must be positive" }); return; }
+
+  const col = asset_type === "PKR" ? "pkr_balance" : "okbond_balance";
+
+  const { data: wallet } = await supabaseAdmin.from("wallets").select("user_id, pkr_balance, okbond_balance").eq("user_id", user_id).maybeSingle();
+  if (!wallet) {
+    await supabaseAdmin.from("wallets").insert({ user_id, pkr_balance: 0, okbond_balance: 0, updated_at: new Date().toISOString() });
+  }
+
+  const current = Number(wallet?.[col as keyof typeof wallet] ?? 0);
+  const newBalance = action === "add" ? current + amount : Math.max(current - amount, 0);
+
+  const { error: updateErr } = await supabaseAdmin.from("wallets")
+    .update({ [col]: newBalance, updated_at: new Date().toISOString() })
+    .eq("user_id", user_id);
+  if (updateErr) { res.status(500).json({ error: "Failed to update wallet" }); return; }
+
+  await supabaseAdmin.from("transactions").insert({
+    user_id,
+    type: action === "add" ? "manual_credit" : "manual_debit",
+    asset_type,
+    amount,
+    balance_after: newBalance,
+    reason: reason.trim(),
+    is_manual: true,
+    admin_name: admin_name?.trim() ?? "Admin",
+    created_at: new Date().toISOString(),
+  }).then(() => {});
+
+  req.log.info({ user_id, asset_type, action, amount }, "Admin wallet adjustment");
+  res.json({ ok: true, new_balance: newBalance });
+});
+
+router.get("/admin/wallet/manual-transactions", async (req, res) => {
+  if (!supabaseAdmin) { res.status(503).json({ error: "Supabase not configured" }); return; }
+  const page = Math.max(Number(req.query.page ?? 1) || 1, 1);
+  const pageSize = 30;
+  const from = (page - 1) * pageSize;
+  const to = from + pageSize - 1;
+  const { data, error, count } = await supabaseAdmin
+    .from("transactions")
+    .select("id, user_id, type, asset_type, amount, balance_after, reason, admin_name, created_at", { count: "exact" })
+    .eq("is_manual", true)
+    .order("created_at", { ascending: false })
+    .range(from, to);
+  if (error) { req.log.warn({ err: error }, "manual-transactions query failed"); res.json({ items: [], total: 0 }); return; }
+  res.json({ items: data ?? [], total: count ?? 0, totalPages: Math.max(Math.ceil((count ?? 0) / pageSize), 1) });
+});
+
+// ─── ADMIN: REFERRALS ───────────────────────────────────────────────────────
+
+router.get("/admin/referrals", async (req, res) => {
+  if (!supabaseAdmin) { res.status(503).json({ error: "Supabase not configured" }); return; }
+  const search = String(req.query.search ?? "").trim();
+  const page = Math.max(Number(req.query.page ?? 1) || 1, 1);
+  const pageSize = 25;
+  const from = (page - 1) * pageSize;
+  const to = from + pageSize - 1;
+
+  let query = supabaseAdmin
+    .from("referrals")
+    .select("id, referrer_id, referee_id, created_at, reward_status, reward_paid_at, referee_first_ride_completed, referee_device_id, referrer_device_id", { count: "exact" });
+
+  if (search) query = query.or(`referrer_id.ilike.%${search}%`);
+
+  const { data, error, count } = await query.order("created_at", { ascending: false }).range(from, to);
+  if (error) { req.log.warn({ err: error }, "referrals query failed"); res.json({ items: [], total: 0 }); return; }
+
+  const rows = data ?? [];
+  const userIds = [...new Set([...rows.map((r) => r.referrer_id), ...rows.map((r) => r.referee_id)].filter(Boolean))];
+  const { data: profiles } = userIds.length > 0
+    ? await supabaseAdmin.from("profiles").select("user_id, name, phone").in("user_id", userIds)
+    : { data: [] };
+
+  const profMap = Object.fromEntries((profiles ?? []).map((p) => [p.user_id, p]));
+
+  const items = rows.map((r) => ({
+    id: r.id,
+    referrer_id: r.referrer_id,
+    referee_id: r.referee_id,
+    referrer_name: profMap[r.referrer_id]?.name ?? "Unknown",
+    referrer_phone: profMap[r.referrer_id]?.phone ?? "—",
+    referee_name: profMap[r.referee_id]?.name ?? "Unknown",
+    referee_phone: profMap[r.referee_id]?.phone ?? "—",
+    created_at: r.created_at,
+    reward_status: r.reward_status ?? "pending",
+    reward_paid_at: r.reward_paid_at ?? null,
+    referee_first_ride_completed: Boolean(r.referee_first_ride_completed),
+    potential_fraud: Boolean(r.referee_device_id && r.referrer_device_id && r.referee_device_id === r.referrer_device_id),
+    referee_device_id: r.referee_device_id ?? null,
+    referrer_device_id: r.referrer_device_id ?? null,
+  }));
+
+  res.json({ items, total: count ?? 0, totalPages: Math.max(Math.ceil((count ?? 0) / pageSize), 1) });
+});
+
+router.post("/admin/referrals/:id/approve", async (req, res) => {
+  if (!supabaseAdmin) { res.status(503).json({ error: "Supabase not configured" }); return; }
+  const { id } = req.params;
+  const { reward_pkr } = req.body as { reward_pkr?: number };
+  const amount = Number(reward_pkr ?? 29000);
+
+  const { data: referral, error: refErr } = await supabaseAdmin
+    .from("referrals").select("referrer_id, reward_status, referee_first_ride_completed").eq("id", id).single();
+  if (refErr || !referral) { res.status(404).json({ error: "Referral not found" }); return; }
+  if (!referral.referee_first_ride_completed) { res.status(400).json({ error: "Referee has not completed first ride yet" }); return; }
+  if (referral.reward_status === "paid") { res.status(400).json({ error: "Reward already paid" }); return; }
+
+  const { data: wallet } = await supabaseAdmin.from("wallets").select("pkr_balance").eq("user_id", referral.referrer_id).maybeSingle();
+  const current = Number(wallet?.pkr_balance ?? 0);
+  const newBalance = current + amount;
+
+  await supabaseAdmin.from("wallets").upsert({ user_id: referral.referrer_id, pkr_balance: newBalance, updated_at: new Date().toISOString() });
+
+  await supabaseAdmin.from("transactions").insert({
+    user_id: referral.referrer_id,
+    type: "referral_bonus",
+    asset_type: "PKR",
+    amount,
+    balance_after: newBalance,
+    reason: "Referral Bonus — referee completed first ride",
+    is_manual: true,
+    admin_name: "System",
+    created_at: new Date().toISOString(),
+  });
+
+  await supabaseAdmin.from("referrals").update({ reward_status: "paid", reward_paid_at: new Date().toISOString() }).eq("id", id);
+
+  req.log.info({ referralId: id, referrerId: referral.referrer_id, amount }, "Referral reward approved");
+  res.json({ ok: true, credited: amount, new_balance: newBalance });
+});
+
+// ─── ADMIN: COMMISSION SETTINGS ─────────────────────────────────────────────
+
+const DEFAULT_COMMISSIONS = {
+  ride: 0.20,
+  delivery: 0.15,
+  hotel: 0.10,
+  rental: 0.12,
+  flight: 0.05,
+};
+
+router.get("/admin/commission", async (req, res) => {
+  if (!supabaseAdmin) { res.status(503).json({ error: "Supabase not configured" }); return; }
+  const { data, error } = await supabaseAdmin.from("app_settings").select("key, value").in("key", ["commission_ride", "commission_delivery", "commission_hotel", "commission_rental", "commission_flight"]);
+  if (error) { res.json({ rates: DEFAULT_COMMISSIONS }); return; }
+  const rates: Record<string, number> = { ...DEFAULT_COMMISSIONS };
+  for (const row of data ?? []) {
+    const k = row.key.replace("commission_", "");
+    rates[k] = Number(row.value ?? DEFAULT_COMMISSIONS[k as keyof typeof DEFAULT_COMMISSIONS]);
+  }
+  const { data: history } = await supabaseAdmin.from("commission_history").select("id, key, old_value, new_value, admin_name, changed_at").order("changed_at", { ascending: false }).limit(20);
+  res.json({ rates, history: history ?? [] });
+});
+
+router.post("/admin/commission/update", async (req, res) => {
+  if (!supabaseAdmin) { res.status(503).json({ error: "Supabase not configured" }); return; }
+  const { rates, admin_name } = req.body as { rates?: Record<string, number>; admin_name?: string };
+  if (!rates || typeof rates !== "object") { res.status(400).json({ error: "rates object required" }); return; }
+
+  const validKeys = ["ride", "delivery", "hotel", "rental", "flight"];
+  const updates = Object.entries(rates).filter(([k]) => validKeys.includes(k));
+
+  const { data: existing } = await supabaseAdmin.from("app_settings").select("key, value").in("key", updates.map(([k]) => `commission_${k}`));
+  const existMap = Object.fromEntries((existing ?? []).map((r) => [r.key, r.value]));
+
+  const historyInserts = updates.map(([k, v]) => ({
+    key: k,
+    old_value: Number(existMap[`commission_${k}`] ?? DEFAULT_COMMISSIONS[k as keyof typeof DEFAULT_COMMISSIONS]),
+    new_value: Number(v),
+    admin_name: admin_name?.trim() ?? "Admin",
+    changed_at: new Date().toISOString(),
+  }));
+
+  for (const [k, v] of updates) {
+    await supabaseAdmin.from("app_settings").upsert({ key: `commission_${k}`, value: String(v), updated_at: new Date().toISOString() }, { onConflict: "key" });
+  }
+
+  if (historyInserts.length > 0) {
+    await supabaseAdmin.from("commission_history").insert(historyInserts);
+  }
+
+  req.log.info({ rates }, "Commission rates updated by admin");
+  res.json({ ok: true, updated: updates.map(([k]) => k) });
+});
+
 export default router;
+
