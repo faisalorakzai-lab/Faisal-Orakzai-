@@ -25,7 +25,6 @@ import { RentalProvider } from "@/contexts/RentalContext";
 import { RideProvider } from "@/contexts/RideContext";
 import { WalletProvider } from "@/contexts/WalletContext";
 
-// SplashScreen only applies on native — skip on web to avoid white overlay
 if (Platform.OS !== "web") {
   SplashScreen.preventAutoHideAsync();
 }
@@ -103,10 +102,6 @@ function RootLayoutNav() {
         name="services/settings"
         options={{ presentation: "card", headerShown: false, animation: "slide_from_right" }}
       />
-      <Stack.Screen
-        name="driver"
-        options={{ presentation: "card", headerShown: false, animation: "slide_from_right" }}
-      />
     </Stack>
   );
 }
@@ -126,8 +121,6 @@ export default function RootLayout() {
     }
   }, [fontsLoaded, fontError]);
 
-  // On web: render immediately — don't block on Google Fonts CDN
-  // On native: safety net after 3 s in case fonts never resolve
   useEffect(() => {
     if (Platform.OS === "web") {
       setForceReady(true);
@@ -140,14 +133,16 @@ export default function RootLayout() {
     return () => clearTimeout(t);
   }, []);
 
-  if (!forceReady && !fontsLoaded && !fontError) return null;
+  if (Platform.OS !== "web" && !fontsLoaded && !fontError && !forceReady) {
+    return null;
+  }
 
   return (
-    <SafeAreaProvider>
-      <ErrorBoundary>
-        <QueryClientProvider client={queryClient}>
-          <GestureHandlerRootView style={{ flex: 1 }}>
-            <KeyboardProvider>
+    <ErrorBoundary>
+      <SafeAreaProvider>
+        <GestureHandlerRootView style={{ flex: 1 }}>
+          <KeyboardProvider>
+            <QueryClientProvider client={queryClient}>
               <AuthProvider>
                 <LocationProvider>
                   <WalletProvider>
@@ -169,10 +164,10 @@ export default function RootLayout() {
                   </WalletProvider>
                 </LocationProvider>
               </AuthProvider>
-            </KeyboardProvider>
-          </GestureHandlerRootView>
-        </QueryClientProvider>
-      </ErrorBoundary>
-    </SafeAreaProvider>
+            </QueryClientProvider>
+          </KeyboardProvider>
+        </GestureHandlerRootView>
+      </SafeAreaProvider>
+    </ErrorBoundary>
   );
 }
