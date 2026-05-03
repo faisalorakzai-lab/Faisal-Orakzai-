@@ -29,6 +29,13 @@ const POLL_MS = 4000;
 const TIMER_SECONDS = 30;
 
 type ServiceType = "ride" | "delivery";
+type NavIcon = React.ComponentProps<typeof Feather>["name"];
+interface PendingRide {
+  id: string;
+  pickup_address?: string;
+  dropoff_address?: string;
+  total_fare?: number;
+}
 
 function BottomNav({ active }: { active: string }) {
   const items = [
@@ -49,7 +56,7 @@ function BottomNav({ active }: { active: string }) {
         }
         return (
           <TouchableOpacity key={item.key} style={navStyles.item} activeOpacity={0.8} onPress={handleNav}>
-            <Feather name={item.icon as any} size={18} color={on ? GOLD_BRIGHT : "#666666"} />
+            <Feather name={item.icon as NavIcon} size={18} color={on ? GOLD_BRIGHT : "#666666"} />
             <Text style={[navStyles.label, { color: on ? GOLD_BRIGHT : "#666666" }]}>{item.label}</Text>
           </TouchableOpacity>
         );
@@ -74,7 +81,7 @@ export default function DriverHome() {
   const [savingPrefs, setSavingPrefs] = useState(false);
   const [todayEarned, setTodayEarned] = useState(0);
   const [todayTrips, setTodayTrips] = useState(0);
-  const [pendingRide, setPendingRide] = useState<any | null>(null);
+  const [pendingRide, setPendingRide] = useState<PendingRide | null>(null);
   const [showRequest, setShowRequest] = useState(false);
   const [activeTab, setActiveTab] = useState("home");
   const [serviceMode, setServiceMode] = useState<"silent" | "business" | "social">("business");
@@ -82,10 +89,10 @@ export default function DriverHome() {
 
   const topPad = insets.top + (Platform.OS === "web" ? 67 : 16);
   const pollRef = useRef<ReturnType<typeof setInterval> | null>(null);
-  const pendingRideRef = useRef<any | null>(null);
+  const pendingRideRef = useRef<PendingRide | null>(null);
   pendingRideRef.current = pendingRide;
 
-  const openRideRequest = useCallback((ride: any) => {
+  const openRideRequest = useCallback((ride: PendingRide) => {
     setPendingRide(ride);
     setShowRequest(true);
     Haptics.notificationAsync(Haptics.NotificationFeedbackType.Warning);
@@ -95,7 +102,7 @@ export default function DriverHome() {
     if (!token) return;
     const res = await fetch(`${API_BASE}/api/otc/driver/requests/searching`, { headers: { Authorization: `Bearer ${token}` } });
     if (!res.ok) return;
-    const data = await res.json() as { ride?: any };
+    const data = await res.json() as { ride?: PendingRide };
     if (data.ride && !pendingRideRef.current) openRideRequest(data.ride);
   }, [token, openRideRequest]);
 
@@ -144,7 +151,7 @@ export default function DriverHome() {
         body: JSON.stringify({ action: "accept" }),
       });
       setTodayTrips((p) => p + 1);
-      setTodayEarned((p) => p + pendingRide.total_fare);
+      setTodayEarned((p) => p + (pendingRide.total_fare ?? 0));
       await fetch(`${API_BASE}/api/otc/ride/${pendingRide.id}/trunk-space`, { method: "PATCH", headers: { "Content-Type": "application/json", Authorization: `Bearer ${token}` }, body: JSON.stringify({ available_liters: trunkLiters }) });
       await fetch(`${API_BASE}/api/otc/ride/${pendingRide.id}/service-mode`, { method: "PATCH", headers: { "Content-Type": "application/json", Authorization: `Bearer ${token}` }, body: JSON.stringify({ service_mode: serviceMode }) });
     } catch {}
