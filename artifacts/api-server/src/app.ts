@@ -7,8 +7,10 @@ import { logger } from "./lib/logger";
 
 const app: Express = express();
 
+// pino-http uses `export =` which has no call signatures under moduleResolution:bundler
+// eslint-disable-next-line @typescript-eslint/no-explicit-any
 app.use(
-  pinoHttp({
+  (pinoHttp as any)({
     logger,
     serializers: {
       req(req: IncomingMessage & { id?: unknown }) {
