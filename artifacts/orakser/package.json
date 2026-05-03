@@ -72,6 +72,7 @@
     "vaul": "^1.1.2",
     "vite": "catalog:",
     "wouter": "^3.3.5",
-    "zod": "catalog:"
+    "zod": "catalog:",
+    "@supabase/supabase-js": "^2.105.1"
   }
 }
