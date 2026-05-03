@@ -64,11 +64,10 @@ function useLoopingPulse(active: boolean) {
 function CircularCountdown({ seconds, isDelivery }: { seconds: number; isDelivery?: boolean }) {
   const accentColor = isDelivery ? SILVER : GOLD_BRIGHT;
   const color = seconds > 15 ? ACCEPT_GREEN : seconds > 8 ? (isDelivery ? SILVER : GOLD) : DECLINE_RED;
-  const dashScale = 1 - seconds / TIMER_SECONDS;
   return (
     <View style={circleStyles.wrap}>
       <View style={circleStyles.track} />
-      <View style={[circleStyles.progress, { borderColor: color, transform: [{ rotate: `${dashScale * 360}deg` }] }]} />
+      <View style={[circleStyles.progress, { borderColor: color }]} />
       <View style={circleStyles.inner}>
         <Text style={[circleStyles.seconds, { color }]}>{seconds}</Text>
         <Text style={circleStyles.label}>SEC</Text>
@@ -150,8 +149,7 @@ function RideRequestOverlay({ ride, visible, onAccept, onReject }: {
               <Text style={overlayStyles.headerTitle}>{headerTitle}</Text>
             </View>
             <View style={[overlayStyles.typePill, { backgroundColor: isDelivery ? "rgba(176,184,200,0.12)" : "rgba(255,215,0,0.12)", borderColor: isDelivery ? "rgba(176,184,200,0.3)" : "rgba(255,215,0,0.3)" }]}>
-              <Feather name={isDelivery ? "package" : "navigation"} size={11} color={accentColor} />
-              <Text style={[overlayStyles.typePillText, { color: accentColor }]}>{isDelivery ? "DELIVERY" : "RIDE"}</Text>
+              <Text style={[overlayStyles.typePillText, { color: accentColor }]}>{isDelivery ? "BOX" : "RIDE"}</Text>
             </View>
             <TouchableOpacity style={overlayStyles.rejectCorner} onPress={onReject} activeOpacity={0.8}>
               <Feather name="x" size={18} color="#FFFFFF" />
@@ -170,7 +168,7 @@ function RideRequestOverlay({ ride, visible, onAccept, onReject }: {
             </View>
             <View style={overlayStyles.routeDivider} />
             <View style={overlayStyles.routeRow}>
-              <Feather name={isDelivery ? "package" : "navigation"} size={15} color="#FFFFFF" />
+              <Text style={{ color: "#FFFFFF", fontSize: 14 }}>{isDelivery ? "▣" : "➤"}</Text>
               <View style={{ flex: 1 }}>
                 <Text style={overlayStyles.routeLabel}>{isDelivery ? "Drop-off / Receiver" : "Drop"}</Text>
                 <Text style={overlayStyles.routeText} numberOfLines={2}>{ride.dropoff_address}</Text>
@@ -182,13 +180,13 @@ function RideRequestOverlay({ ride, visible, onAccept, onReject }: {
           {isDelivery && (
             <View style={overlayStyles.deliveryCard}>
               <View style={overlayStyles.deliveryRow}>
-                <Feather name="box" size={14} color={SILVER} />
+                <Text style={{ color: SILVER, fontSize: 14 }}>▣</Text>
                 <Text style={overlayStyles.deliveryLabel}>Package Type</Text>
                 <Text style={overlayStyles.deliveryVal}>{ride.package_type ?? "Standard Parcel"}</Text>
               </View>
               {(ride.receiver_name || ride.receiver_contact) && (
                 <View style={overlayStyles.deliveryRow}>
-                  <Feather name="user" size={14} color={SILVER} />
+                  <Text style={{ color: SILVER, fontSize: 14 }}>◉</Text>
                   <Text style={overlayStyles.deliveryLabel}>Receiver</Text>
                   <Text style={overlayStyles.deliveryVal}>{ride.receiver_name ?? ""}{ride.receiver_contact ? ` · ${ride.receiver_contact}` : ""}</Text>
                 </View>
