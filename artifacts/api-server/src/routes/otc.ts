@@ -35,6 +35,19 @@ type AdminOverviewStats = {
   totalRevenue: number;
 };
 
+type AdminProfileRow = {
+  id: string;
+  user_id: string;
+  name: string | null;
+  email: string | null;
+  phone: string | null;
+  role: string | null;
+  is_blocked: boolean | null;
+  created_at: string | null;
+  updated_at: string | null;
+  avatar_url?: string | null;
+};
+
 function mintDriverToken(driverId: string, phone: string): string | null {
   if (!SESSION_SECRET) return null;
   const header = Buffer.from(JSON.stringify({ alg: "HS256", typ: "JWT" })).toString("base64");
@@ -124,6 +137,72 @@ router.get("/admin/activity", async (req, res) => {
       { id: "5", title: "Rental Inquiry Started", subtitle: "Fleet request queued", icon: "key", time: "44m ago" },
     ],
   });
+});
+
+router.get("/admin/users", async (req, res) => {
+  if (!supabaseAdmin) { res.status(503).json({ error: "Supabase not configured" }); return; }
+  const search = String(req.query.search ?? "").trim();
+  const role = String(req.query.role ?? "all");
+  const page = Math.max(Number(req.query.page ?? 1) || 1, 1);
+  const pageSize = Math.min(Math.max(Number(req.query.pageSize ?? 10) || 10, 1), 50);
+  const from = (page - 1) * pageSize;
+  const to = from + pageSize - 1;
+
+  let query = supabaseAdmin
+    .from("profiles")
+    .select("id, user_id, name, email, phone, role, is_blocked, created_at, updated_at, avatar_url", { count: "exact" });
+
+  if (role === "user" || role === "driver") query = query.eq("role", role);
+  if (search) query = query.or(`name.ilike.%${search}%,email.ilike.%${search}%`);
+
+  const { data, error, count } = await query.order("created_at", { ascending: false }).range(from, to);
+  if (error) { res.status(500).json({ error: "Failed to fetch users" }); return; }
+
+  const rows = (data ?? []) as AdminProfileRow[];
+  const items = await Promise.all(rows.map(async (row) => {
+    const [ridesTaken, walletRow, issues] = await Promise.all([
+      supabaseAdmin.from("ride_requests").select("id", { count: "exact", head: true }).eq("user_id", row.user_id),
+      supabaseAdmin.from("wallets").select("balance").eq("user_id", row.user_id).maybeSingle(),
+      supabaseAdmin.from("support_tickets").select("id, subject, status, created_at").eq("user_id", row.user_id).order("created_at", { ascending: false }).limit(5),
+    ]);
+
+    return {
+      id: row.id,
+      user_id: row.user_id,
+      name: row.name ?? "Unknown User",
+      email: row.email ?? row.phone ?? "—",
+      role: row.role === "driver" ? "Driver" : "User",
+      is_blocked: Boolean(row.is_blocked),
+      created_at: row.created_at,
+      avatar_url: row.avatar_url ?? null,
+      total_rides: ridesTaken.count ?? 0,
+      wallet_balance: Number(walletRow.data?.balance ?? 0),
+      issues: issues.data ?? [],
+    };
+  }));
+
+  res.json({
+    items,
+    page,
+    pageSize,
+    total: count ?? 0,
+    totalPages: Math.max(Math.ceil((count ?? 0) / pageSize), 1),
+  });
+});
+
+router.patch("/admin/users/:id/block", async (req, res) => {
+  if (!supabaseAdmin) { res.status(503).json({ error: "Supabase not configured" }); return; }
+  const { id } = req.params;
+  const { is_blocked } = req.body as { is_blocked?: boolean };
+  if (typeof is_blocked !== "boolean") { res.status(400).json({ error: "is_blocked must be boolean" }); return; }
+  const { data, error } = await supabaseAdmin
+    .from("profiles")
+    .update({ is_blocked, updated_at: new Date().toISOString() })
+    .eq("id", id)
+    .select("id, is_blocked")
+    .single();
+  if (error || !data) { res.status(500).json({ error: "Failed to update user status" }); return; }
+  res.json({ ok: true, user: data });
 });
 
 router.post("/driver/otp-request", async (req, res) => {
