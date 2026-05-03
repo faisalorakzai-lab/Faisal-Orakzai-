@@ -205,6 +205,140 @@ router.patch("/admin/users/:id/block", async (req, res) => {
   res.json({ ok: true, user: data });
 });
 
+router.get("/admin/drivers/pending", async (req, res) => {
+  if (!supabaseAdmin) { res.status(503).json({ error: "Supabase not configured" }); return; }
+  const search = String(req.query.search ?? "").trim();
+  const page = Math.max(Number(req.query.page ?? 1) || 1, 1);
+  const pageSize = Math.min(Math.max(Number(req.query.pageSize ?? 20) || 20, 1), 50);
+  const from = (page - 1) * pageSize;
+  const to = from + pageSize - 1;
+  let query = supabaseAdmin
+    .from("drivers")
+    .select("id, name, phone, vehicle_model, plate_number, ride_type, status, created_at, cnic_front_url, cnic_back_url, license_url, registration_url, vehicle_photo_url, rejection_reason", { count: "exact" })
+    .eq("status", "pending");
+  if (search) query = query.or(`name.ilike.%${search}%,phone.ilike.%${search}%`);
+  const { data, error, count } = await query.order("created_at", { ascending: false }).range(from, to);
+  if (error) { res.status(500).json({ error: "Failed to fetch pending drivers" }); return; }
+  res.json({
+    drivers: (data ?? []).map((d) => ({
+      id: d.id,
+      name: d.name ?? "Unknown",
+      phone: d.phone ?? "—",
+      vehicle_model: d.vehicle_model ?? "—",
+      plate_number: d.plate_number ?? "—",
+      vehicle_type: d.ride_type ?? "—",
+      status: d.status ?? "pending",
+      created_at: d.created_at,
+      rejection_reason: d.rejection_reason ?? null,
+      documents: {
+        cnic_front: d.cnic_front_url ?? null,
+        cnic_back: d.cnic_back_url ?? null,
+        license: d.license_url ?? null,
+        registration: d.registration_url ?? null,
+        vehicle_photo: d.vehicle_photo_url ?? null,
+      },
+    })),
+    page,
+    pageSize,
+    total: count ?? 0,
+    totalPages: Math.max(Math.ceil((count ?? 0) / pageSize), 1),
+  });
+});
+
+router.patch("/admin/drivers/:id/verify", async (req, res) => {
+  if (!supabaseAdmin) { res.status(503).json({ error: "Supabase not configured" }); return; }
+  const { id } = req.params;
+  const { action, reason } = req.body as { action?: "approve" | "reject"; reason?: string };
+  if (action !== "approve" && action !== "reject") { res.status(400).json({ error: "action must be 'approve' or 'reject'" }); return; }
+  if (action === "reject" && !reason?.trim()) { res.status(400).json({ error: "reason is required when rejecting" }); return; }
+  const newStatus = action === "approve" ? "active" : "rejected";
+  const update: Record<string, unknown> = { status: newStatus, updated_at: new Date().toISOString() };
+  if (action === "reject") update.rejection_reason = reason!.trim();
+  const { data, error } = await supabaseAdmin.from("drivers").update(update).eq("id", id).select("id, name, phone, status").single();
+  if (error || !data) { res.status(500).json({ error: "Failed to update driver status" }); return; }
+  const notification = action === "approve"
+    ? "Welcome to Orakzai Group! You are now live and can start accepting rides."
+    : `Your driver application was not approved. Reason: ${reason}`;
+  try {
+    await supabaseAdmin.from("driver_notifications").insert({ driver_id: id, message: notification, type: action === "approve" ? "approval" : "rejection", created_at: new Date().toISOString() });
+  } catch { }
+  req.log.info({ driverId: id, action }, "Driver verification updated");
+  res.json({ ok: true, driver: data, notification });
+});
+
+router.get("/admin/rides", async (req, res) => {
+  if (!supabaseAdmin) { res.status(503).json({ error: "Supabase not configured" }); return; }
+  const search = String(req.query.search ?? "").trim();
+  const statusFilter = String(req.query.status ?? "all").toLowerCase();
+  const page = Math.max(Number(req.query.page ?? 1) || 1, 1);
+  const pageSize = Math.min(Math.max(Number(req.query.pageSize ?? 20) || 20, 1), 50);
+  const from = (page - 1) * pageSize;
+  const to = from + pageSize - 1;
+  let query = supabaseAdmin
+    .from("ride_requests")
+    .select("id, user_id, driver_id, pickup_address, dropoff_address, total_fare, distance_km, ride_type, service_type, payment_method, status, created_at, updated_at, admin_cancellation_reason", { count: "exact" });
+  const validStatuses = ["searching", "assigned", "arrived", "ongoing", "completed", "cancelled"];
+  if (statusFilter !== "all" && validStatuses.includes(statusFilter)) {
+    query = query.ilike("status", statusFilter);
+  }
+  if (search) {
+    query = query.or(`pickup_address.ilike.%${search}%,dropoff_address.ilike.%${search}%,id.ilike.%${search}%`);
+  }
+  const { data, error, count } = await query.order("created_at", { ascending: false }).range(from, to);
+  if (error) { res.status(500).json({ error: "Failed to fetch rides" }); return; }
+
+  const rides = data ?? [];
+  const userIds = [...new Set(rides.map((r) => r.user_id).filter(Boolean))];
+  const driverIds = [...new Set(rides.map((r) => r.driver_id).filter(Boolean))];
+
+  const [profilesRes, driversRes] = await Promise.all([
+    userIds.length > 0 ? supabaseAdmin.from("profiles").select("user_id, name, phone").in("user_id", userIds) : Promise.resolve({ data: [] }),
+    driverIds.length > 0 ? supabaseAdmin.from("drivers").select("id, name, phone").in("id", driverIds) : Promise.resolve({ data: [] }),
+  ]);
+
+  const profileMap = Object.fromEntries((profilesRes.data ?? []).map((p) => [p.user_id, p]));
+  const driverMap = Object.fromEntries((driversRes.data ?? []).map((d) => [d.id, d]));
+
+  const items = rides.map((r) => ({
+    id: r.id,
+    user_id: r.user_id,
+    driver_id: r.driver_id,
+    user_name: profileMap[r.user_id]?.name ?? "Unknown User",
+    user_phone: profileMap[r.user_id]?.phone ?? "—",
+    driver_name: r.driver_id ? (driverMap[r.driver_id]?.name ?? "Unassigned") : "Unassigned",
+    driver_phone: r.driver_id ? (driverMap[r.driver_id]?.phone ?? "—") : "—",
+    pickup_address: r.pickup_address,
+    dropoff_address: r.dropoff_address,
+    total_fare: r.total_fare,
+    distance_km: r.distance_km,
+    ride_type: r.ride_type ?? r.service_type ?? "ride",
+    payment_method: r.payment_method ?? "cash",
+    status: r.status,
+    created_at: r.created_at,
+    updated_at: r.updated_at,
+    admin_cancellation_reason: r.admin_cancellation_reason ?? null,
+  }));
+
+  res.json({ items, page, pageSize, total: count ?? 0, totalPages: Math.max(Math.ceil((count ?? 0) / pageSize), 1) });
+});
+
+router.patch("/admin/rides/:id/override", async (req, res) => {
+  if (!supabaseAdmin) { res.status(503).json({ error: "Supabase not configured" }); return; }
+  const { id } = req.params;
+  const { status, cancellation_reason } = req.body as { status?: string; cancellation_reason?: string };
+  const allowed = ["Searching", "Assigned", "arrived", "ongoing", "completed", "Cancelled"];
+  if (!status || !allowed.includes(status)) { res.status(400).json({ error: `status must be one of: ${allowed.join(", ")}` }); return; }
+  const update: Record<string, unknown> = { status, updated_at: new Date().toISOString() };
+  if (status === "Cancelled" && cancellation_reason?.trim()) {
+    update.admin_cancellation_reason = cancellation_reason.trim();
+    update.driver_id = null;
+  }
+  const { data, error } = await supabaseAdmin.from("ride_requests").update(update).eq("id", id).select("id, status").single();
+  if (error || !data) { res.status(500).json({ error: "Failed to override ride status" }); return; }
+  req.log.info({ rideId: id, status }, "Admin ride override");
+  res.json({ ok: true, ride: data });
+});
+
 router.post("/driver/otp-request", async (req, res) => {
   if (!supabaseAdmin) { res.status(503).json({ error: "Supabase not configured" }); return; }
   const { phone } = req.body as { phone?: string };
