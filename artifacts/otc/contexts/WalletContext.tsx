@@ -34,6 +34,7 @@ interface WalletContextValue {
   transactions: Transaction[];
   isLoading: boolean;
   addTransaction: (tx: Omit<Transaction, "id" | "timestamp">) => void;
+  setBalance: React.Dispatch<React.SetStateAction<number>>;
   claimReferral: (referralCode: string) => boolean;
   hasClaimedWelcome: boolean;
 }
@@ -199,6 +200,7 @@ export function WalletProvider({ children }: { children: React.ReactNode }) {
         transactions,
         isLoading,
         addTransaction,
+        setBalance,
         claimReferral,
         hasClaimedWelcome,
       }}

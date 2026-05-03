@@ -206,6 +206,21 @@ export default function HomeScreen() {
           <MaterialCommunityIcons name="chevron-right" size={16} color="#555" />
         </TouchableOpacity>
 
+        <TouchableOpacity
+          style={styles.referStrip}
+          onPress={() => router.push("/(tabs)/invite")}
+          activeOpacity={0.85}
+        >
+          <MaterialCommunityIcons name="hand-coin" size={20} color={GOLD} />
+          <View style={styles.referText}>
+            <Text style={styles.referTitle}>Place a Ride Bid</Text>
+            <Text style={styles.referSub}>
+              Offer below suggested fare and track live request status
+            </Text>
+          </View>
+          <MaterialCommunityIcons name="chevron-right" size={18} color={GOLD} />
+        </TouchableOpacity>
+
         {/* ── SERVICES HEADER ── */}
         <Text style={styles.sectionHeader}>OUR SERVICES</Text>
 

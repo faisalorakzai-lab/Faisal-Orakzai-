@@ -29,6 +29,7 @@ import { PaymentSelector, type PaymentMethod } from "@/components/ride/PaymentSe
 import { useAuth } from "@/contexts/AuthContext";
 import { useLocation } from "@/contexts/LocationContext";
 import { useRide, type RideClass } from "@/contexts/RideContext";
+import { useWallet } from "@/contexts/WalletContext";
 import { supabase } from "@/lib/supabase";
 import { setActiveRide } from "@/lib/activeRideStore";
 import { useColors } from "@/hooks/useColors";
@@ -69,6 +70,7 @@ export default function OtcRideScreen() {
   const { user: authUser, token: authToken } = useAuth();
   const { city, district, coordinates } = useLocation();
   const { setSelectedClass } = useRide();
+  const { addTransaction } = useWallet();
 
   const [phase, setPhase] = useState<Phase>("input");
   const [pickup, setPickup] = useState<MapCoord | null>(null);
@@ -246,6 +248,16 @@ export default function OtcRideScreen() {
     }
 
     Haptics.impactAsync(Haptics.ImpactFeedbackStyle.Heavy);
+
+    const fare = parseInt(offeredPrice, 10) || suggestedPrice;
+    if (fare < suggestedPrice && fare > 0) {
+      addTransaction({
+        type: "debit",
+        amount: 1,
+        description: "OTC bid placed",
+        category: "ride",
+      });
+    }
 
     const id = `OTC-${Date.now()}-${Math.random()
       .toString(36)
