@@ -24,6 +24,7 @@ import { ReferralProvider } from "@/contexts/ReferralContext";
 import { RentalProvider } from "@/contexts/RentalContext";
 import { RideProvider } from "@/contexts/RideContext";
 import { WalletProvider } from "@/contexts/WalletContext";
+import { WealthProvider } from "@/contexts/WealthContext";
 
 if (Platform.OS !== "web") {
   SplashScreen.preventAutoHideAsync().catch(() => {});
@@ -159,21 +160,23 @@ export default function RootLayout() {
               <AuthProvider>
                 <LocationProvider>
                   <WalletProvider>
-                    <ReferralProvider>
-                      <RentalProvider>
-                        <HotelProvider>
-                          <FlightProvider>
-                            <CharacterProvider>
-                              <RideProvider>
-                                <AuthGate>
-                                  <RootLayoutNav />
-                                </AuthGate>
-                              </RideProvider>
-                            </CharacterProvider>
-                          </FlightProvider>
-                        </HotelProvider>
-                      </RentalProvider>
-                    </ReferralProvider>
+                    <WealthProvider>
+                      <ReferralProvider>
+                        <RentalProvider>
+                          <HotelProvider>
+                            <FlightProvider>
+                              <CharacterProvider>
+                                <RideProvider>
+                                  <AuthGate>
+                                    <RootLayoutNav />
+                                  </AuthGate>
+                                </RideProvider>
+                              </CharacterProvider>
+                            </FlightProvider>
+                          </HotelProvider>
+                        </RentalProvider>
+                      </ReferralProvider>
+                    </WealthProvider>
                   </WalletProvider>
                 </LocationProvider>
               </AuthProvider>
