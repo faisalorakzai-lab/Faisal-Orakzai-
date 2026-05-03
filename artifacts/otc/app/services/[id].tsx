@@ -93,6 +93,22 @@ const SERVICE_META: Record<string, ServiceMeta> = {
     estimatedTime: "Instant booking",
     priceLabel: "From PKR 3,500/night",
   },
+  sovereign: {
+    id: "sovereign",
+    label: "Sovereign Mode",
+    icon: "shield",
+    description:
+      "Reserve elite, discreet, and high-priority transport with premium dispatch handling.",
+    features: [
+      "Priority dispatch",
+      "Elite partner drivers",
+      "Discreet service",
+      "Concierge support",
+    ],
+    coinReward: 20,
+    estimatedTime: "Instant priority",
+    priceLabel: "From PKR 2,500",
+  },
 };
 
 export default function ServiceDetailScreen() {
